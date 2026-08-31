@@ -7,6 +7,15 @@ import {
   ShoppingBag, Plus, Filter, Search
 } from 'lucide-react';
 
+const LISTA_DISTRIBUIDORAS = [
+  'AMBEV',
+  'BRASIL KIRIN',
+  'DONNA',
+  'LIGA DISTRIBUIDORA',
+  'COCA COLA',
+  'OUTRAS'
+];
+
 export default function Dashboard() {
   const [produtos, setProdutos] = useState([]);
   const [movimentacoes, setMovimentacoes] = useState([]);
@@ -39,7 +48,7 @@ export default function Dashboard() {
 
   async function carregarDados() {
     setLoading(true);
-    const { data: dataProdutos } = await supabase.from('produtos').select('*').order('nome');
+    const { data: dataProdutos, error: errProd } = await supabase.from('produtos').select('*').order('nome');
     const { data: dataMov } = await supabase.from('movimentacoes').select('*, produtos(nome, tipo, distribuidora)').order('created_at', { ascending: false });
     const { data: dataVendas } = await supabase.from('vendas').select('*, produtos(nome, tipo, distribuidora, preco_custo)').order('created_at', { ascending: false });
 
@@ -55,15 +64,12 @@ export default function Dashboard() {
   const totalUnidades = produtos.reduce((acc, p) => acc + p.quantidade_estoque, 0);
   const valorTotalEstoque = produtos.reduce((acc, p) => acc + (p.quantidade_estoque * Number(p.preco_custo)), 0);
 
-  const saidasHoje = movimentacoes
-    .filter(m => m.tipo_movimentacao === 'SAIDA_BAR' && m.created_at.startsWith(hoje))
-    .reduce((acc, cur) => acc + cur.quantidade, 0);
-
   // AÇÕES
   async function salvarProduto(e) {
     e.preventDefault();
     await supabase.from('produtos').insert([{
       ...novoProduto,
+      fornecedor: novoProduto.distribuidora,
       preco_custo: parseFloat(novoProduto.preco_custo || 0),
       preco_venda: parseFloat(novoProduto.preco_venda || 0),
       quantidade_estoque: parseInt(novoProduto.quantidade_estoque || 0),
@@ -128,13 +134,31 @@ export default function Dashboard() {
   const vendasFiltradas = vendas.filter(v => {
     const distValida = filtroDistribuidora === 'TODAS' || v.produtos?.distribuidora === filtroDistribuidora;
     const tipoValido = filtroTipo === 'TODOS' || v.produtos?.tipo === filtroTipo;
-    const dataVenda = v.created_at.split('T')[0];
+    const dataVenda = v.created_at?.split('T')[0];
     const inicioValido = !filtroDataInicio || dataVenda >= filtroDataInicio;
     const fimValido = !filtroDataFim || dataVenda <= filtroDataFim;
     return distValida && tipoValido && inicioValido && fimValido;
   });
 
-  const lucroTotalFiltrado = vendasFiltradas.reduce((acc, v) => acc + Number(v.lucro_total), 0);
+  const lucroTotalFiltrado = vendasFiltradas.reduce((acc, v) => acc + Number(v.lucro_total || 0), 0);
+
+  // Componente Reutilizável de Renderizar Lista de Produtos Agrupados
+  const renderOptionsAgrupadas = (incluirPreco = false) => {
+    return LISTA_DISTRIBUIDORAS.map(dist => {
+      const itensDaDist = produtos.filter(p => p.distribuidora === dist);
+      if (itensDaDist.length === 0) return null;
+
+      return (
+        <optgroup key={dist} label={`--- ${dist} ---`}>
+          {itensDaDist.map(p => (
+            <option key={p.id} value={p.id}>
+              {p.nome} {incluirPreco ? `(R$ ${Number(p.preco_venda).toFixed(2)})` : `(Saldo: ${p.quantidade_estoque})`}
+            </option>
+          ))}
+        </optgroup>
+      );
+    });
+  };
 
   return (
     <div className="min-h-screen bg-[#090d16] text-slate-100 p-6 font-sans">
@@ -207,12 +231,7 @@ export default function Dashboard() {
 
         <select value={filtroDistribuidora} onChange={e => setFiltroDistribuidora(e.target.value)} className="bg-[#090d16] border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-300">
           <option value="TODAS">Todas as Distribuidoras</option>
-          <option value="AMBEV">AMBEV</option>
-          <option value="BRASIL KIRIN">BRASIL KIRIN</option>
-          <option value="DONNA">DONNA</option>
-          <option value="LIGA DISTRIBUIDORA">LIGA DISTRIBUIDORA</option>
-          <option value="COCA COLA">COCA COLA</option>
-          <option value="OUTRAS">OUTRAS</option>
+          {LISTA_DISTRIBUIDORAS.map(d => <option key={d} value={d}>{d}</option>)}
         </select>
 
         <select value={filtroTipo} onChange={e => setFiltroTipo(e.target.value)} className="bg-[#090d16] border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-300">
@@ -274,16 +293,11 @@ export default function Dashboard() {
       {modalProduto && (
         <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
           <form onSubmit={salvarProduto} className="bg-[#0f172a] border border-slate-800 p-5 rounded-xl w-full max-w-md space-y-3">
-            <h2 className="text-base font-bold text-slate-100">Cadastrar Novo Item</h2>
+            <h2 className="text-base font-bold text-slate-100">Cadastrar Novo Item Adicional</h2>
             <input required placeholder="Nome do Item" value={novoProduto.nome} onChange={e => setNovoProduto({...novoProduto, nome: e.target.value})} className="w-full bg-[#090d16] border border-slate-800 p-2 rounded text-xs" />
             <div className="grid grid-cols-2 gap-2">
               <select value={novoProduto.distribuidora} onChange={e => setNovoProduto({...novoProduto, distribuidora: e.target.value})} className="bg-[#090d16] border border-slate-800 p-2 rounded text-xs">
-                <option value="AMBEV">AMBEV</option>
-                <option value="BRASIL KIRIN">BRASIL KIRIN</option>
-                <option value="DONNA">DONNA</option>
-                <option value="LIGA DISTRIBUIDORA">LIGA DISTRIBUIDORA</option>
-                <option value="COCA COLA">COCA COLA</option>
-                <option value="OUTRAS">OUTRAS</option>
+                {LISTA_DISTRIBUIDORAS.map(d => <option key={d} value={d}>{d}</option>)}
               </select>
               <select value={novoProduto.tipo} onChange={e => setNovoProduto({...novoProduto, tipo: e.target.value})} className="bg-[#090d16] border border-slate-800 p-2 rounded text-xs">
                 <option value="Cerveja">Cerveja</option>
@@ -313,10 +327,12 @@ export default function Dashboard() {
         <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
           <form onSubmit={registrarMovimentacao} className="bg-[#0f172a] border border-slate-800 p-5 rounded-xl w-full max-w-md space-y-3">
             <h2 className="text-base font-bold">Saída / Retorno de Estoque</h2>
-            <select required value={novoMovimento.produto_id} onChange={e => setNovoMovimento({...novoMovimento, produto_id: e.target.value})} className="w-full bg-[#090d16] border border-slate-800 p-2 rounded text-xs">
-              <option value="">Selecione o Item...</option>
-              {produtos.map(p => <option key={p.id} value={p.id}>[{p.distribuidora}] {p.nome} (Saldo: {p.quantidade_estoque})</option>)}
+            
+            <select required value={novoMovimento.produto_id} onChange={e => setNovoMovimento({...novoMovimento, produto_id: e.target.value})} className="w-full bg-[#090d16] border border-slate-800 p-2 rounded text-xs text-slate-100">
+              <option value="">Selecione o Item na lista...</option>
+              {renderOptionsAgrupadas(false)}
             </select>
+
             <select value={novoMovimento.tipo_movimentacao} onChange={e => setNovoMovimento({...novoMovimento, tipo_movimentacao: e.target.value})} className="w-full bg-[#090d16] border border-slate-800 p-2 rounded text-xs">
               <option value="SAIDA_BAR">Saída para o Bar</option>
               <option value="RETORNO_ESTOQUE">Retorno do Bar para Estoque</option>
@@ -340,10 +356,12 @@ export default function Dashboard() {
         <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
           <form onSubmit={registrarVenda} className="bg-[#0f172a] border border-slate-800 p-5 rounded-xl w-full max-w-md space-y-3">
             <h2 className="text-base font-bold">Registrar Venda ao Cliente</h2>
-            <select required value={novaVenda.produto_id} onChange={e => setNovaVenda({...novaVenda, produto_id: e.target.value})} className="w-full bg-[#090d16] border border-slate-800 p-2 rounded text-xs">
-              <option value="">Selecione o Item...</option>
-              {produtos.map(p => <option key={p.id} value={p.id}>[{p.distribuidora}] {p.nome} - R$ {p.preco_venda}</option>)}
+            
+            <select required value={novaVenda.produto_id} onChange={e => setNovaVenda({...novaVenda, produto_id: e.target.value})} className="w-full bg-[#090d16] border border-slate-800 p-2 rounded text-xs text-slate-100">
+              <option value="">Selecione o Item na lista...</option>
+              {renderOptionsAgrupadas(true)}
             </select>
+
             <input required type="number" placeholder="Quantidade Vendida" value={novaVenda.quantidade} onChange={e => setNovaVenda({...novaVenda, quantidade: e.target.value})} className="w-full bg-[#090d16] border border-slate-800 p-2 rounded text-xs" />
             
             <div className="flex justify-end gap-2 pt-2">

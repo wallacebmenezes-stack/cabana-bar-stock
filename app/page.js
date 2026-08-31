@@ -1,10 +1,10 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { supabase } from '@/lib/supabase';
+import { supabase } from '../lib/supabase';
 
 // Senha de segurança para autorizar edição de estoque e preços
-const SENHA_ADMIN = '1234';
+const SENHA_ADMIN = 'cabana@2026';
 
 export default function GestaoEstoqueBar() {
   // Dados do banco

@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import { 
   Package, AlertTriangle, TrendingUp, ArrowUpRight, 
-  ShoppingBag, Plus, Filter, Search
+  ShoppingBag, Plus, Filter, Search, AlertCircle
 } from 'lucide-react';
 
 const LISTA_DISTRIBUIDORAS = [
@@ -21,6 +21,7 @@ export default function Dashboard() {
   const [movimentacoes, setMovimentacoes] = useState([]);
   const [vendas, setVendas] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [erroSupabase, setErroSupabase] = useState(null);
 
   // Filtros
   const [buscaNome, setBuscaNome] = useState('');
@@ -48,14 +49,24 @@ export default function Dashboard() {
 
   async function carregarDados() {
     setLoading(true);
-    const { data: dataProdutos } = await supabase.from('produtos').select('*').order('nome');
-    const { data: dataMov } = await supabase.from('movimentacoes').select('*, produtos(nome, tipo, distribuidora)').order('created_at', { ascending: false });
-    const { data: dataVendas } = await supabase.from('vendas').select('*, produtos(nome, tipo, distribuidora, preco_custo)').order('created_at', { ascending: false });
+    setErroSupabase(null);
 
-    if (dataProdutos) setProdutos(dataProdutos);
-    if (dataMov) setMovimentacoes(dataMov);
-    if (dataVendas) setVendas(dataVendas);
-    setLoading(false);
+    try {
+      const { data: dataProdutos, error: errProd } = await supabase.from('produtos').select('*').order('nome');
+      const { data: dataMov, error: errMov } = await supabase.from('movimentacoes').select('*, produtos(nome, tipo, distribuidora)').order('created_at', { ascending: false });
+      const { data: dataVendas, error: errVendas } = await supabase.from('vendas').select('*, produtos(nome, tipo, distribuidora, preco_custo)').order('created_at', { ascending: false });
+
+      if (errProd) throw errProd;
+
+      setProdutos(dataProdutos || []);
+      setMovimentacoes(dataMov || []);
+      setVendas(dataVendas || []);
+    } catch (err) {
+      console.error("Erro ao carregar do Supabase:", err);
+      setErroSupabase(err.message || 'Erro de conexão com o banco de dados');
+    } finally {
+      setLoading(false);
+    }
   }
 
   // CÁLCULOS DASHBOARD
@@ -63,10 +74,10 @@ export default function Dashboard() {
   const valorTotalEstoque = produtos.reduce((acc, p) => acc + ((p.quantidade_estoque || 0) * Number(p.preco_custo || 0)), 0);
   const itensCriticos = produtos.filter(p => (p.quantidade_estoque || 0) <= (p.estoque_minimo || 0));
 
-  // AÇÕES DE CADASTRO E MOVIMENTAÇÃO
+  // AÇÕES
   async function salvarProduto(e) {
     e.preventDefault();
-    await supabase.from('produtos').insert([{
+    const { error } = await supabase.from('produtos').insert([{
       ...novoProduto,
       fornecedor: novoProduto.distribuidora,
       preco_custo: parseFloat(novoProduto.preco_custo || 0),
@@ -74,6 +85,9 @@ export default function Dashboard() {
       quantidade_estoque: parseInt(novoProduto.quantidade_estoque || 0),
       estoque_minimo: parseInt(novoProduto.estoque_minimo || 5)
     }]);
+
+    if (error) return alert(`Erro ao salvar: ${error.message}`);
+
     setNovoProduto({ nome: '', distribuidora: 'AMBEV', tipo: 'Cerveja', preco_custo: '', preco_venda: '', quantidade_estoque: '', estoque_minimo: '' });
     setModalProduto(false);
     carregarDados();
@@ -92,12 +106,14 @@ export default function Dashboard() {
 
     if (novoSaldo < 0) return alert('Estoque insuficiente para esta saída!');
 
-    await supabase.from('movimentacoes').insert([{
+    const { error: errMov } = await supabase.from('movimentacoes').insert([{
       produto_id: novoMovimento.produto_id,
       tipo_movimentacao: novoMovimento.tipo_movimentacao,
       quantidade: qtd,
       motivo: novoMovimento.tipo_movimentacao === 'RETORNO_ESTOQUE' ? novoMovimento.motivo : null
     }]);
+
+    if (errMov) return alert(`Erro no registro: ${errMov.message}`);
 
     await supabase.from('produtos').update({ quantidade_estoque: novoSaldo }).eq('id', prod.id);
 
@@ -114,19 +130,21 @@ export default function Dashboard() {
     const qtd = parseInt(novaVenda.quantidade);
     const lucro = ((prod.preco_venda || 0) - (prod.preco_custo || 0)) * qtd;
 
-    await supabase.from('vendas').insert([{
+    const { error } = await supabase.from('vendas').insert([{
       produto_id: prod.id,
       quantidade: qtd,
       valor_unitario: prod.preco_venda || 0,
       lucro_total: lucro
     }]);
 
+    if (error) return alert(`Erro na venda: ${error.message}`);
+
     setNovaVenda({ produto_id: '', quantidade: '' });
     setModalVenda(false);
     carregarDados();
   }
 
-  // FILTRAGEM DE TABELAS
+  // FILTRAGEM
   const produtosFiltrados = produtos.filter(p => {
     const nomeValido = (p.nome || '').toLowerCase().includes(buscaNome.toLowerCase());
     const distValida = filtroDistribuidora === 'TODAS' || p.distribuidora === filtroDistribuidora || p.fornecedor === filtroDistribuidora;
@@ -145,11 +163,10 @@ export default function Dashboard() {
 
   const lucroTotalFiltrado = vendasFiltradas.reduce((acc, v) => acc + Number(v.lucro_total || 0), 0);
 
-  // RENDERIZAÇÃO DINÂMICA DE OPÇÕES AGRUPADAS NO SELECT
+  // OPÇÕES AGRUPADAS
   const renderOptionsAgrupadas = (incluirPreco = false) => {
-    if (!produtos || produtos.length === 0) {
-      return <option disabled value="">Nenhum produto cadastrado no banco...</option>;
-    }
+    if (loading) return <option disabled value="">Carregando dados do banco...</option>;
+    if (produtos.length === 0) return <option disabled value="">Nenhum produto encontrado no banco</option>;
 
     const grupos = produtos.reduce((acc, prod) => {
       const dist = prod.distribuidora || prod.fornecedor || 'OUTRAS';
@@ -171,6 +188,14 @@ export default function Dashboard() {
 
   return (
     <div className="min-h-screen bg-[#090d16] text-slate-100 p-6 font-sans">
+      {/* Banner de Erro caso a conexão falhe */}
+      {erroSupabase && (
+        <div className="bg-red-500/10 border border-red-500/30 text-red-400 p-3 rounded-lg mb-4 flex items-center gap-2 text-xs">
+          <AlertCircle size={16} />
+          <span><strong>Erro de Conexão:</strong> {erroSupabase}. Verifique as permissões SQL no Supabase.</span>
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex justify-between items-center mb-6 border-b border-slate-800/80 pb-4">
         <div>
@@ -190,7 +215,7 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Cards de Métricas */}
+      {/* Cards */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
         <div className="bg-[#0f172a]/70 border border-slate-800 p-4 rounded-xl">
           <p className="text-slate-400 text-[11px] font-bold tracking-wider uppercase mb-1">TOTAL DE UNIDADES</p>
@@ -225,7 +250,7 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Barra de Busca e Filtros */}
+      {/* Busca e Filtros */}
       <div className="bg-[#0f172a]/70 border border-slate-800 p-3.5 rounded-xl mb-6 flex flex-wrap gap-3 items-center">
         <div className="flex-1 min-w-[240px] relative">
           <Search className="absolute left-3 top-2.5 text-slate-500" size={16} />
@@ -274,26 +299,34 @@ export default function Dashboard() {
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-800/60">
-            {produtosFiltrados.map(p => {
-              const critico = (p.quantidade_estoque || 0) <= (p.estoque_minimo || 0);
-              return (
-                <tr key={p.id} className="hover:bg-slate-800/30 transition">
-                  <td className="p-3.5 font-semibold text-slate-100">{p.nome}</td>
-                  <td className="p-3.5 text-amber-500/90 font-medium">{p.distribuidora || p.fornecedor || 'OUTRAS'}</td>
-                  <td className="p-3.5 text-slate-400">{p.tipo}</td>
-                  <td className="p-3.5">R$ {Number(p.preco_custo || 0).toFixed(2)}</td>
-                  <td className="p-3.5">R$ {Number(p.preco_venda || 0).toFixed(2)}</td>
-                  <td className="p-3.5 font-bold text-slate-100">{p.quantidade_estoque ?? 0} und</td>
-                  <td className="p-3.5">
-                    {critico ? (
-                      <span className="bg-amber-500/10 text-amber-400 text-[10px] px-2 py-0.5 rounded border border-amber-500/20 font-bold">CRÍTICO</span>
-                    ) : (
-                      <span className="bg-emerald-500/10 text-emerald-400 text-[10px] px-2 py-0.5 rounded border border-emerald-500/20 font-bold">NORMAL</span>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
+            {produtosFiltrados.length === 0 ? (
+              <tr>
+                <td colSpan="7" className="p-4 text-center text-slate-500 text-xs">
+                  {loading ? 'Carregando produtos...' : 'Nenhum produto cadastrado na tabela.'}
+                </td>
+              </tr>
+            ) : (
+              produtosFiltrados.map(p => {
+                const critico = (p.quantidade_estoque || 0) <= (p.estoque_minimo || 0);
+                return (
+                  <tr key={p.id} className="hover:bg-slate-800/30 transition">
+                    <td className="p-3.5 font-semibold text-slate-100">{p.nome}</td>
+                    <td className="p-3.5 text-amber-500/90 font-medium">{p.distribuidora || p.fornecedor || 'OUTRAS'}</td>
+                    <td className="p-3.5 text-slate-400">{p.tipo}</td>
+                    <td className="p-3.5">R$ {Number(p.preco_custo || 0).toFixed(2)}</td>
+                    <td className="p-3.5">R$ {Number(p.preco_venda || 0).toFixed(2)}</td>
+                    <td className="p-3.5 font-bold text-slate-100">{p.quantidade_estoque ?? 0} und</td>
+                    <td className="p-3.5">
+                      {critico ? (
+                        <span className="bg-amber-500/10 text-amber-400 text-[10px] px-2 py-0.5 rounded border border-amber-500/20 font-bold">CRÍTICO</span>
+                      ) : (
+                        <span className="bg-emerald-500/10 text-emerald-400 text-[10px] px-2 py-0.5 rounded border border-emerald-500/20 font-bold">NORMAL</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })
+            )}
           </tbody>
         </table>
       </div>

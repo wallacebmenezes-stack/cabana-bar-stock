@@ -1,417 +1,946 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { supabase } from '../lib/supabase';
-import { 
-  Package, AlertTriangle, TrendingUp, ArrowUpRight, 
-  ShoppingBag, Plus, Filter, Search, AlertCircle
-} from 'lucide-react';
+import { supabase } from '@/lib/supabase';
 
-const LISTA_DISTRIBUIDORAS = [
-  'AMBEV',
-  'BRASIL KIRIN',
-  'DONNA',
-  'LIGA DISTRIBUIDORA',
-  'COCA COLA',
-  'OUTRAS'
-];
+// Senha de segurança para autorizar edição de estoque e preços
+const SENHA_ADMIN = '1234';
 
-export default function Dashboard() {
+export default function GestaoEstoqueBar() {
+  // Dados do banco
   const [produtos, setProdutos] = useState([]);
+  const [tiposBebida, setTiposBebida] = useState([]);
   const [movimentacoes, setMovimentacoes] = useState([]);
-  const [vendas, setVendas] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [erroSupabase, setErroSupabase] = useState(null);
+  const [mensagemErro, setMensagemErro] = useState('');
 
-  // Filtros
+  // Navegação por Abas
+  // 'estoque' | 'entradas' | 'saidas' | 'retornos' | 'perdas'
+  const [abaAtiva, setAbaAtiva] = useState('estoque');
+
+  // Filtros Globais (Multi-seleção)
   const [buscaNome, setBuscaNome] = useState('');
-  const [filtroDistribuidora, setFiltroDistribuidora] = useState('TODAS');
-  const [filtroTipo, setFiltroTipo] = useState('TODOS');
-  const [filtroDataInicio, setFiltroDataInicio] = useState('');
-  const [filtroDataFim, setFiltroDataFim] = useState('');
+  const [produtosSelecionados, setProdutosSelecionados] = useState([]);
+  const [distribuidoraSelecionada, setDistribuidoraSelecionada] = useState('TODAS');
+  const [tiposSelecionados, setTiposSelecionados] = useState([]);
+  const [motivosPerdaSelecionados, setMotivosPerdaSelecionados] = useState([]);
+  const [dataInicio, setDataInicio] = useState('');
+  const [dataFim, setDataFim] = useState('');
 
-  // Modais
-  const [modalProduto, setModalProduto] = useState(false);
-  const [modalMovimento, setModalMovimento] = useState(false);
-  const [modalVenda, setModalVenda] = useState(false);
+  // Modais de Controle
+  const [modalNovoProduto, setModalNovoProduto] = useState(false);
+  const [modalNovoTipo, setModalNovoTipo] = useState(false);
+  const [modalEditarProduto, setModalEditarProduto] = useState(null);
+  const [modalMovimentacao, setModalMovimentacao] = useState(null); // 'ENTRADA' | 'SAIDA' | 'RETORNO' | 'PERDA'
+  const [modalSenhaOpen, setModalSenhaOpen] = useState(false);
+  const [senhaInput, setSenhaInput] = useState('');
+  const [produtoParaEditar, setProdutoParaEditar] = useState(null);
 
-  // Formulários
-  const [novoProduto, setNovoProduto] = useState({ 
-    nome: '', distribuidora: 'AMBEV', tipo: 'Cerveja', 
-    preco_custo: '', preco_venda: '', quantidade_estoque: '', estoque_minimo: '' 
+  // Form de Novo Produto
+  const [novoProd, setNovoProd] = useState({
+    nome: '',
+    distribuidora: 'AMBEV',
+    tipo: 'Cerveja',
+    preco_custo: 0,
+    preco_venda: 0,
+    quantidade_estoque: 0,
+    estoque_critico: 5
   });
-  const [novoMovimento, setNovoMovimento] = useState({ produto_id: '', tipo_movimentacao: 'SAIDA_BAR', quantidade: '', motivo: '' });
-  const [novaVenda, setNovaVenda] = useState({ produto_id: '', quantidade: '' });
+
+  // Form de Novo Tipo de Bebida
+  const [novoTipoNome, setNovoTipoNome] = useState('');
+
+  // Form de Movimentação (Entrada/Saída/Retorno/Perda)
+  const [formMov, setFormMov] = useState({
+    produto_id: '',
+    quantidade: 1,
+    motivo_perda: 'Validade',
+    observacao: ''
+  });
+
+  // --- CARREGAMENTO DE DADOS ---
+  const carregarDados = async () => {
+    setLoading(true);
+    setMensagemErro('');
+    try {
+      // 1. Tipos de Bebida
+      const { data: dataTipos, error: errTipos } = await supabase
+        .from('tipos_bebida')
+        .select('*')
+        .order('nome');
+      if (errTipos) throw errTipos;
+      setTiposBebida(dataTipos || []);
+
+      // 2. Produtos
+      const { data: dataProds, error: errProds } = await supabase
+        .from('produtos')
+        .select('*')
+        .order('nome');
+      if (errProds) throw errProds;
+      setProdutos(dataProds || []);
+
+      // 3. Movimentações
+      const { data: dataMovs, error: errMovs } = await supabase
+        .from('movimentacoes')
+        .select('*, produtos(nome, tipo, distribuidora)')
+        .order('created_at', { ascending: false });
+      if (errMovs) throw errMovs;
+      setMovimentacoes(dataMovs || []);
+
+    } catch (err) {
+      console.error('Erro no Supabase:', err);
+      setMensagemErro('Erro ao carregar dados do Supabase: ' + (err.message || 'Verifique as tabelas.'));
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
     carregarDados();
   }, []);
 
-  async function carregarDados() {
-    setLoading(true);
-    setErroSupabase(null);
+  // --- AÇÕES DO SISTEMA ---
+
+  // Cadastrar Novo Tipo de Bebida
+  const handleSalvarNovoTipo = async (e) => {
+    e.preventDefault();
+    if (!novoTipoNome.trim()) return;
+    try {
+      const { error } = await supabase.from('tipos_bebida').insert([{ nome: novoTipoNome.trim() }]);
+      if (error) throw error;
+      setNovoTipoNome('');
+      setModalNovoTipo(false);
+      carregarDados();
+    } catch (err) {
+      alert('Erro ao criar tipo de bebida: ' + err.message);
+    }
+  };
+
+  // Cadastrar Novo Produto
+  const handleSalvarNovoProduto = async (e) => {
+    e.preventDefault();
+    try {
+      const { error } = await supabase.from('produtos').insert([novoProd]);
+      if (error) throw error;
+      setModalNovoProduto(false);
+      setNovoProd({
+        nome: '',
+        distribuidora: 'AMBEV',
+        tipo: tiposBebida[0]?.nome || 'Cerveja',
+        preco_custo: 0,
+        preco_venda: 0,
+        quantidade_estoque: 0,
+        estoque_critico: 5
+      });
+      carregarDados();
+    } catch (err) {
+      alert('Erro ao cadastrar produto: ' + err.message);
+    }
+  };
+
+  // Abrir Edição com Validação de Senha
+  const solicitarEdicaoEstoque = (produto) => {
+    setProdutoParaEditar({ ...produto });
+    setSenhaInput('');
+    setModalSenhaOpen(true);
+  };
+
+  const confirmarSenhaAutenticacao = (e) => {
+    e.preventDefault();
+    if (senhaInput === SENHA_ADMIN) {
+      setModalSenhaOpen(false);
+      setModalEditarProduto(produtoParaEditar);
+    } else {
+      alert('Senha incorreta! Acesso negado.');
+    }
+  };
+
+  // Salvar Atualização do Produto
+  const handleSalvarEdicaoProduto = async (e) => {
+    e.preventDefault();
+    try {
+      const { id, nome, distribuidora, tipo, preco_custo, preco_venda, quantidade_estoque, estoque_critico } = modalEditarProduto;
+      const { error } = await supabase
+        .from('produtos')
+        .update({
+          nome,
+          distribuidora,
+          tipo,
+          preco_custo: Number(preco_custo),
+          preco_venda: Number(preco_venda),
+          quantidade_estoque: Number(quantidade_estoque),
+          estoque_critico: Number(estoque_critico)
+        })
+        .eq('id', id);
+
+      if (error) throw error;
+      setModalEditarProduto(null);
+      carregarDados();
+    } catch (err) {
+      alert('Erro ao atualizar produto: ' + err.message);
+    }
+  };
+
+  // Registrar Movimentação (Entrada / Saída / Retorno / Perda)
+  const handleRegistrarMovimentacao = async (e) => {
+    e.preventDefault();
+    if (!formMov.produto_id) return alert('Selecione um produto!');
+
+    const prod = produtos.find((p) => p.id.toString() === formMov.produto_id.toString());
+    if (!prod) return alert('Produto não encontrado!');
+
+    const qtd = Number(formMov.quantidade);
+    if (qtd <= 0) return alert('Quantidade deve ser maior que zero!');
+
+    let novoEstoque = prod.quantidade_estoque;
+    if (modalMovimentacao === 'ENTRADA' || modalMovimentacao === 'RETORNO') {
+      novoEstoque += qtd;
+    } else if (modalMovimentacao === 'SAIDA' || modalMovimentacao === 'PERDA') {
+      if (prod.quantidade_estoque < qtd) {
+        if (!confirm(`Atenção: O estoque atual é de ${prod.quantidade_estoque} und. Deseja registrar a movimentação mesmo assim?`)) {
+          return;
+        }
+      }
+      novoEstoque -= qtd;
+    }
 
     try {
-      const { data: dataProdutos, error: errProd } = await supabase.from('produtos').select('*').order('nome');
-      const { data: dataMov, error: errMov } = await supabase.from('movimentacoes').select('*, produtos(nome, tipo, distribuidora)').order('created_at', { ascending: false });
-      const { data: dataVendas, error: errVendas } = await supabase.from('vendas').select('*, produtos(nome, tipo, distribuidora, preco_custo)').order('created_at', { ascending: false });
+      // 1. Grava a movimentação CONGELANDO o preço do momento
+      const { error: errMov } = await supabase.from('movimentacoes').insert([
+        {
+          produto_id: prod.id,
+          tipo_movimentacao: modalMovimentacao,
+          quantidade: qtd,
+          preco_custo_momento: prod.preco_custo,
+          preco_venda_momento: prod.preco_venda,
+          motivo_perda: modalMovimentacao === 'PERDA' ? formMov.motivo_perda : null,
+          observacao: formMov.observacao
+        }
+      ]);
+
+      if (errMov) throw errMov;
+
+      // 2. Atualiza o estoque atual do produto
+      const { error: errProd } = await supabase
+        .from('produtos')
+        .update({ quantidade_estoque: Math.max(0, novoEstoque) })
+        .eq('id', prod.id);
 
       if (errProd) throw errProd;
 
-      setProdutos(dataProdutos || []);
-      setMovimentacoes(dataMov || []);
-      setVendas(dataVendas || []);
+      setModalMovimentacao(null);
+      setFormMov({ produto_id: '', quantidade: 1, motivo_perda: 'Validade', observacao: '' });
+      carregarDados();
     } catch (err) {
-      console.error("Erro ao carregar do Supabase:", err);
-      setErroSupabase(err.message || 'Erro de conexão com o banco de dados');
-    } finally {
-      setLoading(false);
+      alert('Erro ao registrar movimentação: ' + err.message);
     }
-  }
-
-  // CÁLCULOS DASHBOARD
-  const totalUnidades = produtos.reduce((acc, p) => acc + (p.quantidade_estoque || 0), 0);
-  const valorTotalEstoque = produtos.reduce((acc, p) => acc + ((p.quantidade_estoque || 0) * Number(p.preco_custo || 0)), 0);
-  const itensCriticos = produtos.filter(p => (p.quantidade_estoque || 0) <= (p.estoque_minimo || 0));
-
-  // AÇÕES
-  async function salvarProduto(e) {
-    e.preventDefault();
-    const { error } = await supabase.from('produtos').insert([{
-      ...novoProduto,
-      fornecedor: novoProduto.distribuidora,
-      preco_custo: parseFloat(novoProduto.preco_custo || 0),
-      preco_venda: parseFloat(novoProduto.preco_venda || 0),
-      quantidade_estoque: parseInt(novoProduto.quantidade_estoque || 0),
-      estoque_minimo: parseInt(novoProduto.estoque_minimo || 5)
-    }]);
-
-    if (error) return alert(`Erro ao salvar: ${error.message}`);
-
-    setNovoProduto({ nome: '', distribuidora: 'AMBEV', tipo: 'Cerveja', preco_custo: '', preco_venda: '', quantidade_estoque: '', estoque_minimo: '' });
-    setModalProduto(false);
-    carregarDados();
-  }
-
-  async function registrarMovimentacao(e) {
-    e.preventDefault();
-    const prod = produtos.find(p => p.id === novoMovimento.produto_id);
-    if (!prod) return alert('Selecione um produto válido');
-
-    const qtd = parseInt(novoMovimento.quantidade);
-    const saldoAtual = prod.quantidade_estoque || 0;
-    const novoSaldo = novoMovimento.tipo_movimentacao === 'SAIDA_BAR' 
-      ? saldoAtual - qtd 
-      : saldoAtual + qtd;
-
-    if (novoSaldo < 0) return alert('Estoque insuficiente para esta saída!');
-
-    const { error: errMov } = await supabase.from('movimentacoes').insert([{
-      produto_id: novoMovimento.produto_id,
-      tipo_movimentacao: novoMovimento.tipo_movimentacao,
-      quantidade: qtd,
-      motivo: novoMovimento.tipo_movimentacao === 'RETORNO_ESTOQUE' ? novoMovimento.motivo : null
-    }]);
-
-    if (errMov) return alert(`Erro no registro: ${errMov.message}`);
-
-    await supabase.from('produtos').update({ quantidade_estoque: novoSaldo }).eq('id', prod.id);
-
-    setNovoMovimento({ produto_id: '', tipo_movimentacao: 'SAIDA_BAR', quantidade: '', motivo: '' });
-    setModalMovimento(false);
-    carregarDados();
-  }
-
-  async function registrarVenda(e) {
-    e.preventDefault();
-    const prod = produtos.find(p => p.id === novaVenda.produto_id);
-    if (!prod) return alert('Selecione um produto válido');
-
-    const qtd = parseInt(novaVenda.quantidade);
-    const lucro = ((prod.preco_venda || 0) - (prod.preco_custo || 0)) * qtd;
-
-    const { error } = await supabase.from('vendas').insert([{
-      produto_id: prod.id,
-      quantidade: qtd,
-      valor_unitario: prod.preco_venda || 0,
-      lucro_total: lucro
-    }]);
-
-    if (error) return alert(`Erro na venda: ${error.message}`);
-
-    setNovaVenda({ produto_id: '', quantidade: '' });
-    setModalVenda(false);
-    carregarDados();
-  }
-
-  // FILTRAGEM
-  const produtosFiltrados = produtos.filter(p => {
-    const nomeValido = (p.nome || '').toLowerCase().includes(buscaNome.toLowerCase());
-    const distValida = filtroDistribuidora === 'TODAS' || p.distribuidora === filtroDistribuidora || p.fornecedor === filtroDistribuidora;
-    const tipoValido = filtroTipo === 'TODOS' || p.tipo === filtroTipo;
-    return nomeValido && distValida && tipoValido;
-  });
-
-  const vendasFiltradas = vendas.filter(v => {
-    const distValida = filtroDistribuidora === 'TODAS' || v.produtos?.distribuidora === filtroDistribuidora || v.produtos?.fornecedor === filtroDistribuidora;
-    const tipoValido = filtroTipo === 'TODOS' || v.produtos?.tipo === filtroTipo;
-    const dataVenda = v.created_at?.split('T')[0];
-    const inicioValido = !filtroDataInicio || dataVenda >= filtroDataInicio;
-    const fimValido = !filtroDataFim || dataVenda <= filtroDataFim;
-    return distValida && tipoValido && inicioValido && fimValido;
-  });
-
-  const lucroTotalFiltrado = vendasFiltradas.reduce((acc, v) => acc + Number(v.lucro_total || 0), 0);
-
-  // OPÇÕES AGRUPADAS
-  const renderOptionsAgrupadas = (incluirPreco = false) => {
-    if (loading) return <option disabled value="">Carregando dados do banco...</option>;
-    if (produtos.length === 0) return <option disabled value="">Nenhum produto encontrado no banco</option>;
-
-    const grupos = produtos.reduce((acc, prod) => {
-      const dist = prod.distribuidora || prod.fornecedor || 'OUTRAS';
-      if (!acc[dist]) acc[dist] = [];
-      acc[dist].push(prod);
-      return acc;
-    }, {});
-
-    return Object.keys(grupos).map(dist => (
-      <optgroup key={dist} label={`--- ${dist} ---`}>
-        {grupos[dist].map(p => (
-          <option key={p.id} value={p.id}>
-            {p.nome} {incluirPreco ? `(R$ ${Number(p.preco_venda || 0).toFixed(2)})` : `(Saldo: ${p.quantidade_estoque ?? 0})`}
-          </option>
-        ))}
-      </optgroup>
-    ));
   };
 
+  // --- FILTRAGEM DE DADOS ---
+
+  const toggleSelecaoMultipla = (item, lista, setLista) => {
+    if (lista.includes(item)) {
+      setLista(lista.filter((i) => i !== item));
+    } else {
+      setLista([...lista, item]);
+    }
+  };
+
+  // Filtragem de Produtos na Tabela Principal
+  const produtosFiltrados = produtos.filter((p) => {
+    const atendeNome = p.nome.toLowerCase().includes(buscaNome.toLowerCase());
+    const atendeProdutos = produtosSelecionados.length === 0 || produtosSelecionados.includes(p.nome);
+    const atendeDistribuidora = distribuidoraSelecionada === 'TODAS' || p.distribuidora === distribuidoraSelecionada;
+    const atendeTipo = tiposSelecionados.length === 0 || tiposSelecionados.includes(p.tipo);
+    return atendeNome && atendeProdutos && atendeDistribuidora && atendeTipo;
+  });
+
+  // Filtragem de Históricos por Data e Tipos
+  const movimentacoesFiltradas = movimentacoes.filter((m) => {
+    const dataMov = new Date(m.created_at);
+
+    if (dataInicio && dataMov < new Date(dataInicio + 'T00:00:00')) return false;
+    if (dataFim && dataMov > new Date(dataFim + 'T23:59:59')) return false;
+
+    if (produtosSelecionados.length > 0 && !produtosSelecionados.includes(m.produtos?.nome)) return false;
+    if (tiposSelecionados.length > 0 && !tiposSelecionados.includes(m.produtos?.tipo)) return false;
+
+    if (abaAtiva === 'entradas' && m.tipo_movimentacao !== 'ENTRADA') return false;
+    if (abaAtiva === 'saidas' && m.tipo_movimentacao !== 'SAIDA') return false;
+    if (abaAtiva === 'retornos' && m.tipo_movimentacao !== 'RETORNO') return false;
+    if (abaAtiva === 'perdas') {
+      if (m.tipo_movimentacao !== 'PERDA') return false;
+      if (motivosPerdaSelecionados.length > 0 && !motivosPerdaSelecionados.includes(m.motivo_perda)) return false;
+    }
+
+    return true;
+  });
+
+  // Métricas do Topo
+  const totalUnidades = produtos.reduce((acc, p) => acc + (p.quantidade_estoque || 0), 0);
+  const valorEstoqueCusto = produtos.reduce((acc, p) => acc + (p.quantidade_estoque || 0) * (p.preco_custo || 0), 0);
+  const alertasEstoqueBaixo = produtos.filter((p) => p.quantidade_estoque <= p.estoque_critico).length;
+  const totalPerdasQtd = movimentacoes
+    .filter((m) => m.tipo_movimentacao === 'PERDA')
+    .reduce((acc, m) => acc + m.quantidade, 0);
+
   return (
-    <div className="min-h-screen bg-[#090d16] text-slate-100 p-6 font-sans">
-      {/* Banner de Erro caso a conexão falhe */}
-      {erroSupabase && (
-        <div className="bg-red-500/10 border border-red-500/30 text-red-400 p-3 rounded-lg mb-4 flex items-center gap-2 text-xs">
-          <AlertCircle size={16} />
-          <span><strong>Erro de Conexão:</strong> {erroSupabase}. Verifique as permissões SQL no Supabase.</span>
+    <div className="min-h-screen bg-[#0a0e17] text-slate-100 p-4 md:p-8 font-sans">
+      {/* Cabeçalho */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+        <div>
+          <p className="text-xs uppercase tracking-wider text-amber-500 font-semibold">Cabana do Sol • Gestão de Bar</p>
+          <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-white">Controle de Estoque & Bebidas</h1>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={() => setModalNovoTipo(true)}
+            className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs px-3 py-2 rounded-lg font-medium transition"
+          >
+            + Tipo de Bebida
+          </button>
+          <button
+            onClick={() => setModalNovoProduto(true)}
+            className="bg-amber-600 hover:bg-amber-500 text-white text-xs px-4 py-2 rounded-lg font-semibold transition"
+          >
+            + Novo Produto
+          </button>
+          <button
+            onClick={() => { setModalMovimentacao('SAIDA'); setFormMov({ produto_id: produtos[0]?.id || '', quantidade: 1 }); }}
+            className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs px-4 py-2 rounded-lg font-semibold transition"
+          >
+            ↗ Saída Bar
+          </button>
+          <button
+            onClick={() => { setModalMovimentacao('ENTRADA'); setFormMov({ produto_id: produtos[0]?.id || '', quantidade: 1 }); }}
+            className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs px-4 py-2 rounded-lg font-semibold transition"
+          >
+            ↙ Entrada Estoque
+          </button>
+          <button
+            onClick={() => { setModalMovimentacao('PERDA'); setFormMov({ produto_id: produtos[0]?.id || '', quantidade: 1, motivo_perda: 'Validade' }); }}
+            className="bg-rose-700 hover:bg-rose-600 text-white text-xs px-4 py-2 rounded-lg font-semibold transition"
+          >
+            ⚠ Registrar Perda
+          </button>
+        </div>
+      </div>
+
+      {mensagemErro && (
+        <div className="bg-rose-950/80 border border-rose-500/50 text-rose-200 text-xs p-3 rounded-xl mb-6">
+          {mensagemErro}
         </div>
       )}
 
-      {/* Header */}
-      <div className="flex justify-between items-center mb-6 border-b border-slate-800/80 pb-4">
+      {/* Cards de Métricas */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+        <div className="bg-[#111726] border border-slate-800/80 p-4 rounded-xl">
+          <p className="text-xs text-slate-400 font-medium">TOTAL DE UNIDADES</p>
+          <p className="text-2xl font-bold text-white mt-1">{totalUnidades} <span className="text-xs text-slate-500 font-normal">und</span></p>
+        </div>
+        <div className="bg-[#111726] border border-slate-800/80 p-4 rounded-xl">
+          <p className="text-xs text-slate-400 font-medium">VALOR EM ESTOQUE (CUSTO)</p>
+          <p className="text-2xl font-bold text-emerald-400 mt-1">
+            R$ {valorEstoqueCusto.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+          </p>
+        </div>
+        <div className="bg-[#111726] border border-slate-800/80 p-4 rounded-xl">
+          <p className="text-xs text-slate-400 font-medium">ALERTAS DE ESTOQUE BAIXO</p>
+          <p className={`text-2xl font-bold mt-1 ${alertasEstoqueBaixo > 0 ? 'text-amber-400' : 'text-slate-400'}`}>
+            {alertasEstoqueBaixo} <span className="text-xs font-normal">itens críticos</span>
+          </p>
+        </div>
+        <div className="bg-[#111726] border border-slate-800/80 p-4 rounded-xl">
+          <p className="text-xs text-slate-400 font-medium">TOTAL DE PERDAS REGISTRADAS</p>
+          <p className="text-2xl font-bold text-rose-400 mt-1">
+            {totalPerdasQtd} <span className="text-xs text-slate-500 font-normal">und</span>
+          </p>
+        </div>
+      </div>
+
+      {/* Navegação entre Abas */}
+      <div className="flex border-b border-slate-800 mb-6 space-x-2 overflow-x-auto pb-1">
+        {[
+          { id: 'estoque', label: 'Estoque Principal' },
+          { id: 'entradas', label: 'Histórico de Entradas' },
+          { id: 'saidas', label: 'Saídas para o Bar' },
+          { id: 'retornos', label: 'Retornos ao Estoque' },
+          { id: 'perdas', label: 'Perdas & Descartes' },
+        ].map((aba) => (
+          <button
+            key={aba.id}
+            onClick={() => setAbaAtiva(aba.id)}
+            className={`px-4 py-2 text-xs font-semibold rounded-t-lg transition whitespace-nowrap ${
+              abaAtiva === aba.id
+                ? 'bg-amber-500/10 text-amber-400 border-b-2 border-amber-500'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
+            }`}
+          >
+            {aba.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Área de Filtros Avançados Múltiplos */}
+      <div className="bg-[#111726] border border-slate-800/80 p-4 rounded-xl mb-6 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+        {/* Busca por Texto */}
         <div>
-          <p className="text-amber-500 font-semibold text-xs tracking-wider uppercase">Cabana do Sol • Gestão de Bar</p>
-          <h1 className="text-2xl font-bold tracking-tight">Controle de Estoque & Bebidas</h1>
-        </div>
-        <div className="flex gap-2">
-          <button onClick={() => setModalProduto(true)} className="bg-amber-600 hover:bg-amber-500 px-3.5 py-2 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition">
-            <Plus size={15} /> NOVO PRODUTO
-          </button>
-          <button onClick={() => setModalMovimento(true)} className="bg-slate-800 hover:bg-slate-700 px-3.5 py-2 rounded-lg text-xs font-semibold flex items-center gap-1.5 border border-slate-700 transition">
-            <ArrowUpRight size={15} /> SAÍDA / RETORNO
-          </button>
-          <button onClick={() => setModalVenda(true)} className="bg-emerald-600 hover:bg-emerald-500 px-3.5 py-2 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition">
-            <ShoppingBag size={15} /> REGISTRAR VENDA
-          </button>
-        </div>
-      </div>
-
-      {/* Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-        <div className="bg-[#0f172a]/70 border border-slate-800 p-4 rounded-xl">
-          <p className="text-slate-400 text-[11px] font-bold tracking-wider uppercase mb-1">TOTAL DE UNIDADES</p>
-          <div className="flex justify-between items-end">
-            <p className="text-2xl font-extrabold">{totalUnidades} <span className="text-xs font-normal text-slate-500">und</span></p>
-            <Package className="text-blue-500 mb-1" size={20} />
-          </div>
-        </div>
-
-        <div className="bg-[#0f172a]/70 border border-slate-800 p-4 rounded-xl">
-          <p className="text-slate-400 text-[11px] font-bold tracking-wider uppercase mb-1">VALOR EM ESTOQUE (CUSTO)</p>
-          <div className="flex justify-between items-end">
-            <p className="text-2xl font-extrabold text-emerald-400">R$ {valorTotalEstoque.toFixed(2)}</p>
-            <TrendingUp className="text-emerald-500 mb-1" size={20} />
-          </div>
-        </div>
-
-        <div className="bg-[#0f172a]/70 border border-slate-800 p-4 rounded-xl">
-          <p className="text-slate-400 text-[11px] font-bold tracking-wider uppercase mb-1">ALERTAS DE ESTOQUE BAIXO</p>
-          <div className="flex justify-between items-end">
-            <p className={`text-2xl font-extrabold ${itensCriticos.length > 0 ? 'text-amber-400' : 'text-slate-200'}`}>{itensCriticos.length} <span className="text-xs font-normal text-slate-500">itens</span></p>
-            <AlertTriangle className={itensCriticos.length > 0 ? "text-amber-500 mb-1" : "text-slate-600 mb-1"} size={20} />
-          </div>
-        </div>
-
-        <div className="bg-[#0f172a]/70 border border-slate-800 p-4 rounded-xl">
-          <p className="text-slate-400 text-[11px] font-bold tracking-wider uppercase mb-1">LUCRO FILTRADO</p>
-          <div className="flex justify-between items-end">
-            <p className="text-2xl font-extrabold text-emerald-400">R$ {lucroTotalFiltrado.toFixed(2)}</p>
-            <Filter className="text-slate-500 mb-1" size={18} />
-          </div>
-        </div>
-      </div>
-
-      {/* Busca e Filtros */}
-      <div className="bg-[#0f172a]/70 border border-slate-800 p-3.5 rounded-xl mb-6 flex flex-wrap gap-3 items-center">
-        <div className="flex-1 min-w-[240px] relative">
-          <Search className="absolute left-3 top-2.5 text-slate-500" size={16} />
-          <input 
-            type="text" 
-            placeholder="Buscar produto pelo nome..." 
-            value={buscaNome} 
-            onChange={e => setBuscaNome(e.target.value)} 
-            className="w-full bg-[#090d16] border border-slate-800 rounded-lg pl-9 pr-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-amber-500"
+          <label className="block text-slate-400 mb-1">Buscar Produto:</label>
+          <input
+            type="text"
+            placeholder="Digite o nome..."
+            value={buscaNome}
+            onChange={(e) => setBuscaNome(e.target.value)}
+            className="w-full bg-[#0a0e17] border border-slate-700/80 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-amber-500"
           />
         </div>
 
-        <select value={filtroDistribuidora} onChange={e => setFiltroDistribuidora(e.target.value)} className="bg-[#090d16] border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-300">
-          <option value="TODAS">Todas as Distribuidoras</option>
-          {LISTA_DISTRIBUIDORAS.map(d => <option key={d} value={d}>{d}</option>)}
-        </select>
+        {/* Múltiplos Tipos de Bebida */}
+        <div>
+          <label className="block text-slate-400 mb-1">Tipos (Múltipla Seleção):</label>
+          <div className="max-h-24 overflow-y-auto bg-[#0a0e17] border border-slate-700/80 rounded-lg p-2 space-y-1">
+            {tiposBebida.map((t) => (
+              <label key={t.id} className="flex items-center gap-2 text-slate-300 hover:text-white cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={tiposSelecionados.includes(t.nome)}
+                  onChange={() => toggleSelecaoMultipla(t.nome, tiposSelecionados, setTiposSelecionados)}
+                  className="rounded border-slate-700 accent-amber-500"
+                />
+                <span>{t.nome}</span>
+              </label>
+            ))}
+          </div>
+        </div>
 
-        <select value={filtroTipo} onChange={e => setFiltroTipo(e.target.value)} className="bg-[#090d16] border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-300">
-          <option value="TODOS">Todos os Tipos</option>
-          <option value="Cerveja">Cerveja</option>
-          <option value="Refrigerante">Refrigerante</option>
-          <option value="Água / Tônica">Água / Tônica</option>
-          <option value="Energético">Energético</option>
-        </select>
+        {/* Múltiplos Produtos */}
+        <div>
+          <label className="block text-slate-400 mb-1">Produtos (Múltipla Seleção):</label>
+          <div className="max-h-24 overflow-y-auto bg-[#0a0e17] border border-slate-700/80 rounded-lg p-2 space-y-1">
+            {produtos.map((p) => (
+              <label key={p.id} className="flex items-center gap-2 text-slate-300 hover:text-white cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={produtosSelecionados.includes(p.nome)}
+                  onChange={() => toggleSelecaoMultipla(p.nome, produtosSelecionados, setProdutosSelecionados)}
+                  className="rounded border-slate-700 accent-amber-500"
+                />
+                <span className="truncate">{p.nome}</span>
+              </label>
+            ))}
+          </div>
+        </div>
 
-        <div className="flex items-center gap-1.5 text-xs text-slate-400">
-          <span>De:</span>
-          <input type="date" value={filtroDataInicio} onChange={e => setFiltroDataInicio(e.target.value)} className="bg-[#090d16] border border-slate-800 rounded px-2 py-1 text-xs" />
-          <span>Até:</span>
-          <input type="date" value={filtroDataFim} onChange={e => setFiltroDataFim(e.target.value)} className="bg-[#090d16] border border-slate-800 rounded px-2 py-1 text-xs" />
+        {/* Intervalo de Datas / Filtro por Perda */}
+        <div>
+          {abaAtiva === 'perdas' ? (
+            <>
+              <label className="block text-slate-400 mb-1">Motivos de Perda:</label>
+              <div className="max-h-24 overflow-y-auto bg-[#0a0e17] border border-slate-700/80 rounded-lg p-2 space-y-1">
+                {['Validade', 'Má conservação', 'Acidental', 'Erro de pedido', 'Outro'].map((m) => (
+                  <label key={m} className="flex items-center gap-2 text-slate-300 hover:text-white cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={motivosPerdaSelecionados.includes(m)}
+                      onChange={() => toggleSelecaoMultipla(m, motivosPerdaSelecionados, setMotivosPerdaSelecionados)}
+                      className="rounded border-slate-700 accent-rose-500"
+                    />
+                    <span>{m}</span>
+                  </label>
+                ))}
+              </div>
+            </>
+          ) : (
+            <>
+              <label className="block text-slate-400 mb-1">Período por Data:</label>
+              <div className="flex gap-2">
+                <input
+                  type="date"
+                  value={dataInicio}
+                  onChange={(e) => setDataInicio(e.target.value)}
+                  className="w-full bg-[#0a0e17] border border-slate-700/80 rounded-lg px-2 py-2 text-slate-200"
+                />
+                <input
+                  type="date"
+                  value={dataFim}
+                  onChange={(e) => setDataFim(e.target.value)}
+                  className="w-full bg-[#0a0e17] border border-slate-700/80 rounded-lg px-2 py-2 text-slate-200"
+                />
+              </div>
+            </>
+          )}
         </div>
       </div>
 
-      {/* Tabela de Produtos */}
-      <div className="bg-[#0f172a]/70 border border-slate-800 rounded-xl overflow-hidden">
-        <table className="w-full text-left text-xs text-slate-300">
-          <thead className="bg-[#090d16] text-slate-400 uppercase text-[10px] tracking-wider border-b border-slate-800">
-            <tr>
-              <th className="p-3.5">PRODUTO</th>
-              <th className="p-3.5">DISTRIBUIDORA</th>
-              <th className="p-3.5">TIPO</th>
-              <th className="p-3.5">PREÇO CUSTO</th>
-              <th className="p-3.5">PREÇO VENDA</th>
-              <th className="p-3.5">SALDO ATUAL</th>
-              <th className="p-3.5">STATUS</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-800/60">
-            {produtosFiltrados.length === 0 ? (
+      {/* TABELA PRINCIPAL DE ESTOQUE */}
+      {abaAtiva === 'estoque' && (
+        <div className="bg-[#111726] border border-slate-800/80 rounded-xl overflow-x-auto">
+          <table className="w-full text-left text-xs text-slate-300">
+            <thead className="bg-[#0a0e17] text-slate-400 border-b border-slate-800 uppercase tracking-wider">
               <tr>
-                <td colSpan="7" className="p-4 text-center text-slate-500 text-xs">
-                  {loading ? 'Carregando produtos...' : 'Nenhum produto cadastrado na tabela.'}
-                </td>
+                <th className="p-3">Produto</th>
+                <th className="p-3">Distribuidora</th>
+                <th className="p-3">Tipo</th>
+                <th className="p-3">Preço Custo</th>
+                <th className="p-3">Preço Venda</th>
+                <th className="p-3">Quantidade em Estoque</th>
+                <th className="p-3">Status</th>
+                <th className="p-3 text-right">Ação</th>
               </tr>
-            ) : (
-              produtosFiltrados.map(p => {
-                const critico = (p.quantidade_estoque || 0) <= (p.estoque_minimo || 0);
-                return (
-                  <tr key={p.id} className="hover:bg-slate-800/30 transition">
-                    <td className="p-3.5 font-semibold text-slate-100">{p.nome}</td>
-                    <td className="p-3.5 text-amber-500/90 font-medium">{p.distribuidora || p.fornecedor || 'OUTRAS'}</td>
-                    <td className="p-3.5 text-slate-400">{p.tipo}</td>
-                    <td className="p-3.5">R$ {Number(p.preco_custo || 0).toFixed(2)}</td>
-                    <td className="p-3.5">R$ {Number(p.preco_venda || 0).toFixed(2)}</td>
-                    <td className="p-3.5 font-bold text-slate-100">{p.quantidade_estoque ?? 0} und</td>
-                    <td className="p-3.5">
-                      {critico ? (
-                        <span className="bg-amber-500/10 text-amber-400 text-[10px] px-2 py-0.5 rounded border border-amber-500/20 font-bold">CRÍTICO</span>
-                      ) : (
-                        <span className="bg-emerald-500/10 text-emerald-400 text-[10px] px-2 py-0.5 rounded border border-emerald-500/20 font-bold">NORMAL</span>
-                      )}
+            </thead>
+            <tbody className="divide-y divide-slate-800/60">
+              {produtosFiltrados.length === 0 ? (
+                <tr>
+                  <td colSpan="8" className="p-8 text-center text-slate-500">
+                    Nenhum produto cadastrado ou encontrado nos filtros.
+                  </td>
+                </tr>
+              ) : (
+                produtosFiltrados.map((p) => {
+                  const isCritico = p.quantidade_estoque <= p.estoque_critico;
+                  return (
+                    <tr key={p.id} className="hover:bg-slate-800/30 transition">
+                      <td className="p-3 font-semibold text-white">{p.nome}</td>
+                      <td className="p-3 text-amber-500 font-medium">{p.distribuidora}</td>
+                      <td className="p-3 text-slate-400">{p.tipo}</td>
+                      <td className="p-3">R$ {Number(p.preco_custo).toFixed(2)}</td>
+                      <td className="p-3">R$ {Number(p.preco_venda).toFixed(2)}</td>
+                      <td className="p-3 font-bold text-white">{p.quantidade_estoque} und</td>
+                      <td className="p-3">
+                        {isCritico ? (
+                          <span className="px-2 py-1 text-[10px] font-bold rounded border border-amber-500/50 bg-amber-500/10 text-amber-400">
+                            CRÍTICO (&le; {p.estoque_critico})
+                          </span>
+                        ) : (
+                          <span className="px-2 py-1 text-[10px] font-bold rounded border border-emerald-500/50 bg-emerald-500/10 text-emerald-400">
+                            OK
+                          </span>
+                        )}
+                      </td>
+                      <td className="p-3 text-right">
+                        <button
+                          onClick={() => solicitarEdicaoEstoque(p)}
+                          className="bg-slate-800 hover:bg-slate-700 text-amber-400 border border-amber-500/30 text-[11px] px-3 py-1.5 rounded font-medium transition"
+                        >
+                          🔒 Atualizar Estoque
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* TABELAS DE HISTÓRICOS (ENTRADAS, SAÍDAS, RETORNOS, PERDAS) */}
+      {abaAtiva !== 'estoque' && (
+        <div className="bg-[#111726] border border-slate-800/80 rounded-xl overflow-x-auto">
+          <table className="w-full text-left text-xs text-slate-300">
+            <thead className="bg-[#0a0e17] text-slate-400 border-b border-slate-800 uppercase tracking-wider">
+              <tr>
+                <th className="p-3">Data / Hora</th>
+                <th className="p-3">Produto</th>
+                <th className="p-3">Tipo Bebida</th>
+                <th className="p-3">Quantidade</th>
+                <th className="p-3">Preço Época</th>
+                {abaAtiva === 'perdas' && <th className="p-3">Motivo da Perda</th>}
+                <th className="p-3">Observação</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800/60">
+              {movimentacoesFiltradas.length === 0 ? (
+                <tr>
+                  <td colSpan="7" className="p-8 text-center text-slate-500">
+                    Nenhum registro encontrado para este filtro.
+                  </td>
+                </tr>
+              ) : (
+                movimentacoesFiltradas.map((m) => (
+                  <tr key={m.id} className="hover:bg-slate-800/30 transition">
+                    <td className="p-3 text-slate-400">
+                      {new Date(m.created_at).toLocaleString('pt-BR')}
                     </td>
+                    <td className="p-3 font-semibold text-white">{m.produtos?.nome || 'Produto Removido'}</td>
+                    <td className="p-3 text-slate-400">{m.produtos?.tipo || '-'}</td>
+                    <td className="p-3 font-bold text-slate-200">{m.quantidade} und</td>
+                    <td className="p-3">
+                      R$ {Number(m.tipo_movimentacao === 'SAIDA' ? m.preco_venda_momento : m.preco_custo_momento).toFixed(2)}
+                    </td>
+                    {abaAtiva === 'perdas' && (
+                      <td className="p-3 text-rose-400 font-semibold">{m.motivo_perda || 'Não informado'}</td>
+                    )}
+                    <td className="p-3 text-slate-400">{m.observacao || '-'}</td>
                   </tr>
-                );
-              })
-            )}
-          </tbody>
-        </table>
-      </div>
-
-      {/* MODAL: NOVO PRODUTO */}
-      {modalProduto && (
-        <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
-          <form onSubmit={salvarProduto} className="bg-[#0f172a] border border-slate-800 p-5 rounded-xl w-full max-w-md space-y-3">
-            <h2 className="text-base font-bold text-slate-100">Cadastrar Novo Item Adicional</h2>
-            <input required placeholder="Nome do Item" value={novoProduto.nome} onChange={e => setNovoProduto({...novoProduto, nome: e.target.value})} className="w-full bg-[#090d16] border border-slate-800 p-2 rounded text-xs" />
-            <div className="grid grid-cols-2 gap-2">
-              <select value={novoProduto.distribuidora} onChange={e => setNovoProduto({...novoProduto, distribuidora: e.target.value})} className="bg-[#090d16] border border-slate-800 p-2 rounded text-xs">
-                {LISTA_DISTRIBUIDORAS.map(d => <option key={d} value={d}>{d}</option>)}
-              </select>
-              <select value={novoProduto.tipo} onChange={e => setNovoProduto({...novoProduto, tipo: e.target.value})} className="bg-[#090d16] border border-slate-800 p-2 rounded text-xs">
-                <option value="Cerveja">Cerveja</option>
-                <option value="Refrigerante">Refrigerante</option>
-                <option value="Água / Tônica">Água / Tônica</option>
-                <option value="Energético">Energético</option>
-              </select>
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              <input required type="number" step="0.01" placeholder="Custo (R$)" value={novoProduto.preco_custo} onChange={e => setNovoProduto({...novoProduto, preco_custo: e.target.value})} className="bg-[#090d16] border border-slate-800 p-2 rounded text-xs" />
-              <input required type="number" step="0.01" placeholder="Venda (R$)" value={novoProduto.preco_venda} onChange={e => setNovoProduto({...novoProduto, preco_venda: e.target.value})} className="bg-[#090d16] border border-slate-800 p-2 rounded text-xs" />
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              <input required type="number" placeholder="Estoque Inicial" value={novoProduto.quantidade_estoque} onChange={e => setNovoProduto({...novoProduto, quantidade_estoque: e.target.value})} className="bg-[#090d16] border border-slate-800 p-2 rounded text-xs" />
-              <input required type="number" placeholder="Estoque Mínimo" value={novoProduto.estoque_minimo} onChange={e => setNovoProduto({...novoProduto, estoque_minimo: e.target.value})} className="bg-[#090d16] border border-slate-800 p-2 rounded text-xs" />
-            </div>
-            <div className="flex justify-end gap-2 pt-2">
-              <button type="button" onClick={() => setModalProduto(false)} className="px-3 py-1.5 bg-slate-800 text-xs rounded">Cancelar</button>
-              <button type="submit" className="px-3 py-1.5 bg-amber-600 text-xs rounded font-medium">Salvar</button>
-            </div>
-          </form>
+                ))
+              )}
+            </tbody>
+          </table>
         </div>
       )}
 
-      {/* MODAL: SAÍDA / RETORNO */}
-      {modalMovimento && (
-        <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
-          <form onSubmit={registrarMovimentacao} className="bg-[#0f172a] border border-slate-800 p-5 rounded-xl w-full max-w-md space-y-3">
-            <h2 className="text-base font-bold">Saída / Retorno de Estoque</h2>
-            
-            <select required value={novoMovimento.produto_id} onChange={e => setNovoMovimento({...novoMovimento, produto_id: e.target.value})} className="w-full bg-[#090d16] border border-slate-800 p-2 rounded text-xs text-slate-100">
-              <option value="">Selecione o Item na lista...</option>
-              {renderOptionsAgrupadas(false)}
-            </select>
+      {/* --- MODAIS DE AÇÃO --- */}
 
-            <select value={novoMovimento.tipo_movimentacao} onChange={e => setNovoMovimento({...novoMovimento, tipo_movimentacao: e.target.value})} className="w-full bg-[#090d16] border border-slate-800 p-2 rounded text-xs">
-              <option value="SAIDA_BAR">Saída para o Bar</option>
-              <option value="RETORNO_ESTOQUE">Retorno do Bar para Estoque</option>
-            </select>
-
-            <input required type="number" placeholder="Quantidade" value={novoMovimento.quantidade} onChange={e => setNovoMovimento({...novoMovimento, quantidade: e.target.value})} className="w-full bg-[#090d16] border border-slate-800 p-2 rounded text-xs" />
-            
-            {novoMovimento.tipo_movimentacao === 'RETORNO_ESTOQUE' && (
-              <input required placeholder="Motivo da Devolução (Avaria, Sobra...)" value={novoMovimento.motivo} onChange={e => setNovoMovimento({...novoMovimento, motivo: e.target.value})} className="w-full bg-[#090d16] border border-slate-800 p-2 rounded text-xs" />
-            )}
-
-            <div className="flex justify-end gap-2 pt-2">
-              <button type="button" onClick={() => setModalMovimento(false)} className="px-3 py-1.5 bg-slate-800 text-xs rounded">Cancelar</button>
-              <button type="submit" className="px-3 py-1.5 bg-amber-600 text-xs rounded font-medium">Confirmar</button>
-            </div>
-          </form>
+      {/* Modal Autenticação por Senha */}
+      {modalSenhaOpen && (
+        <div className="fixed inset-[#0a0e17]/80 inset-0 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-[#111726] border border-slate-800 p-6 rounded-2xl w-full max-w-sm">
+            <h3 className="text-base font-bold text-white mb-2">Acesso Restrito</h3>
+            <p className="text-xs text-slate-400 mb-4">Digite a senha de administrador para alterar estoques e preços:</p>
+            <form onSubmit={confirmarSenhaAutenticacao} className="space-y-4">
+              <input
+                type="password"
+                placeholder="Senha de acesso (Padrão: 1234)"
+                value={senhaInput}
+                onChange={(e) => setSenhaInput(e.target.value)}
+                className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2.5 text-slate-200 text-sm focus:outline-none focus:border-amber-500"
+                autoFocus
+              />
+              <div className="flex justify-end gap-2 text-xs">
+                <button
+                  type="button"
+                  onClick={() => setModalSenhaOpen(false)}
+                  className="px-4 py-2 bg-slate-800 text-slate-300 rounded-lg hover:bg-slate-700"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-amber-600 text-white rounded-lg font-semibold hover:bg-amber-500"
+                >
+                  Confirmar
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
 
-      {/* MODAL: VENDA */}
-      {modalVenda && (
-        <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
-          <form onSubmit={registrarVenda} className="bg-[#0f172a] border border-slate-800 p-5 rounded-xl w-full max-w-md space-y-3">
-            <h2 className="text-base font-bold">Registrar Venda ao Cliente</h2>
-            
-            <select required value={novaVenda.produto_id} onChange={e => setNovaVenda({...novaVenda, produto_id: e.target.value})} className="w-full bg-[#090d16] border border-slate-800 p-2 rounded text-xs text-slate-100">
-              <option value="">Selecione o Item na lista...</option>
-              {renderOptionsAgrupadas(true)}
-            </select>
+      {/* Modal Editar Produto / Estoque */}
+      {modalEditarProduto && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-[#111726] border border-slate-800 p-6 rounded-2xl w-full max-w-md">
+            <h3 className="text-lg font-bold text-white mb-4">Atualizar Produto & Estoque</h3>
+            <form onSubmit={handleSalvarEdicaoProduto} className="space-y-3 text-xs">
+              <div>
+                <label className="block text-slate-400 mb-1">Nome do Produto:</label>
+                <input
+                  type="text"
+                  value={modalEditarProduto.nome}
+                  onChange={(e) => setModalEditarProduto({ ...modalEditarProduto, nome: e.target.value })}
+                  className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2 text-slate-200"
+                  required
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-slate-400 mb-1">Distribuidora:</label>
+                  <input
+                    type="text"
+                    value={modalEditarProduto.distribuidora}
+                    onChange={(e) => setModalEditarProduto({ ...modalEditarProduto, distribuidora: e.target.value })}
+                    className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2 text-slate-200"
+                  />
+                </div>
+                <div>
+                  <label className="block text-slate-400 mb-1">Tipo / Segmento:</label>
+                  <select
+                    value={modalEditarProduto.tipo}
+                    onChange={(e) => setModalEditarProduto({ ...modalEditarProduto, tipo: e.target.value })}
+                    className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2 text-slate-200"
+                  >
+                    {tiposBebida.map((t) => (
+                      <option key={t.id} value={t.nome}>{t.nome}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-slate-400 mb-1">Preço Custo (R$):</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={modalEditarProduto.preco_custo}
+                    onChange={(e) => setModalEditarProduto({ ...modalEditarProduto, preco_custo: e.target.value })}
+                    className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2 text-slate-200"
+                  />
+                </div>
+                <div>
+                  <label className="block text-slate-400 mb-1">Preço Venda (R$):</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={modalEditarProduto.preco_venda}
+                    onChange={(e) => setModalEditarProduto({ ...modalEditarProduto, preco_venda: e.target.value })}
+                    className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2 text-slate-200"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-amber-400 mb-1 font-semibold">Quantidade em Estoque:</label>
+                  <input
+                    type="number"
+                    value={modalEditarProduto.quantidade_estoque}
+                    onChange={(e) => setModalEditarProduto({ ...modalEditarProduto, quantidade_estoque: e.target.value })}
+                    className="w-full bg-[#0a0e17] border border-amber-500/50 rounded-lg p-2 text-white font-bold"
+                  />
+                </div>
+                <div>
+                  <label className="block text-slate-400 mb-1">Nível de Estoque Crítico:</label>
+                  <input
+                    type="number"
+                    value={modalEditarProduto.estoque_critico}
+                    onChange={(e) => setModalEditarProduto({ ...modalEditarProduto, estoque_critico: e.target.value })}
+                    className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2 text-slate-200"
+                  />
+                </div>
+              </div>
+              <div className="flex justify-end gap-2 pt-3">
+                <button
+                  type="button"
+                  onClick={() => setModalEditarProduto(null)}
+                  className="px-4 py-2 bg-slate-800 text-slate-300 rounded-lg"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-amber-600 text-white rounded-lg font-semibold"
+                >
+                  Salvar Alterações
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
-            <input required type="number" placeholder="Quantidade Vendida" value={novaVenda.quantidade} onChange={e => setNovaVenda({...novaVenda, quantidade: e.target.value})} className="w-full bg-[#090d16] border border-slate-800 p-2 rounded text-xs" />
-            
-            <div className="flex justify-end gap-2 pt-2">
-              <button type="button" onClick={() => setModalVenda(false)} className="px-3 py-1.5 bg-slate-800 text-xs rounded">Cancelar</button>
-              <button type="submit" className="px-3 py-1.5 bg-emerald-600 text-xs rounded font-medium">Confirmar Venda</button>
-            </div>
-          </form>
+      {/* Modal Cadastrar Novo Produto */}
+      {modalNovoProduto && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-[#111726] border border-slate-800 p-6 rounded-2xl w-full max-w-md">
+            <h3 className="text-lg font-bold text-white mb-4">Cadastrar Novo Produto</h3>
+            <form onSubmit={handleSalvarNovoProduto} className="space-y-3 text-xs">
+              <div>
+                <label className="block text-slate-400 mb-1">Nome do Produto:</label>
+                <input
+                  type="text"
+                  placeholder="Ex: CERVEJA HEINEKEN LONG NECK"
+                  value={novoProd.nome}
+                  onChange={(e) => setNovoProd({ ...novoProd, nome: e.target.value })}
+                  className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2 text-slate-200"
+                  required
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-slate-400 mb-1">Distribuidora:</label>
+                  <input
+                    type="text"
+                    placeholder="Ex: AMBEV"
+                    value={novoProd.distribuidora}
+                    onChange={(e) => setNovoProd({ ...novoProd, distribuidora: e.target.value })}
+                    className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2 text-slate-200"
+                  />
+                </div>
+                <div>
+                  <label className="block text-slate-400 mb-1">Tipo:</label>
+                  <select
+                    value={novoProd.tipo}
+                    onChange={(e) => setNovoProd({ ...novoProd, tipo: e.target.value })}
+                    className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2 text-slate-200"
+                  >
+                    {tiposBebida.map((t) => (
+                      <option key={t.id} value={t.nome}>{t.nome}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-slate-400 mb-1">Preço Custo (R$):</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={novoProd.preco_custo}
+                    onChange={(e) => setNovoProd({ ...novoProd, preco_custo: Number(e.target.value) })}
+                    className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2 text-slate-200"
+                  />
+                </div>
+                <div>
+                  <label className="block text-slate-400 mb-1">Preço Venda (R$):</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={novoProd.preco_venda}
+                    onChange={(e) => setNovoProd({ ...novoProd, preco_venda: Number(e.target.value) })}
+                    className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2 text-slate-200"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-slate-400 mb-1">Quantidade Inicial:</label>
+                  <input
+                    type="number"
+                    value={novoProd.quantidade_estoque}
+                    onChange={(e) => setNovoProd({ ...novoProd, quantidade_estoque: Number(e.target.value) })}
+                    className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2 text-slate-200"
+                  />
+                </div>
+                <div>
+                  <label className="block text-slate-400 mb-1">Estoque Crítico:</label>
+                  <input
+                    type="number"
+                    value={novoProd.estoque_critico}
+                    onChange={(e) => setNovoProd({ ...novoProd, estoque_critico: Number(e.target.value) })}
+                    className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2 text-slate-200"
+                  />
+                </div>
+              </div>
+              <div className="flex justify-end gap-2 pt-3">
+                <button
+                  type="button"
+                  onClick={() => setModalNovoProduto(false)}
+                  className="px-4 py-2 bg-slate-800 text-slate-300 rounded-lg"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-amber-600 text-white rounded-lg font-semibold"
+                >
+                  Cadastrar
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Novo Tipo de Bebida */}
+      {modalNovoTipo && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-[#111726] border border-slate-800 p-6 rounded-2xl w-full max-w-sm">
+            <h3 className="text-base font-bold text-white mb-3">Cadastrar Novo Tipo de Bebida</h3>
+            <form onSubmit={handleSalvarNovoTipo} className="space-y-4 text-xs">
+              <div>
+                <label className="block text-slate-400 mb-1">Nome do Segmento / Tipo:</label>
+                <input
+                  type="text"
+                  placeholder="Ex: Cachaça, Gin, Liqueur..."
+                  value={novoTipoNome}
+                  onChange={(e) => setNovoTipoNome(e.target.value)}
+                  className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2.5 text-slate-200"
+                  required
+                />
+              </div>
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setModalNovoTipo(false)}
+                  className="px-4 py-2 bg-slate-800 text-slate-300 rounded-lg"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-amber-600 text-white rounded-lg font-semibold"
+                >
+                  Salvar
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Movimentação (Entrada / Saída / Perda) */}
+      {modalMovimentacao && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-[#111726] border border-slate-800 p-6 rounded-2xl w-full max-w-md">
+            <h3 className="text-base font-bold text-white mb-3">
+              Registrar {modalMovimentacao === 'PERDA' ? 'Perda / Descarte' : modalMovimentacao}
+            </h3>
+            <form onSubmit={handleRegistrarMovimentacao} className="space-y-3 text-xs">
+              <div>
+                <label className="block text-slate-400 mb-1">Selecione o Produto:</label>
+                <select
+                  value={formMov.produto_id}
+                  onChange={(e) => setFormMov({ ...formMov, produto_id: e.target.value })}
+                  className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2 text-slate-200"
+                  required
+                >
+                  {produtos.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.nome} (Atual: {p.quantidade_estoque} und)
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-slate-400 mb-1">Quantidade:</label>
+                <input
+                  type="number"
+                  min="1"
+                  value={formMov.quantidade}
+                  onChange={(e) => setFormMov({ ...formMov, quantidade: e.target.value })}
+                  className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2 text-slate-200"
+                  required
+                />
+              </div>
+
+              {modalMovimentacao === 'PERDA' && (
+                <div>
+                  <label className="block text-rose-400 mb-1 font-semibold">Motivo da Perda:</label>
+                  <select
+                    value={formMov.motivo_perda}
+                    onChange={(e) => setFormMov({ ...formMov, motivo_perda: e.target.value })}
+                    className="w-full bg-[#0a0e17] border border-rose-500/50 rounded-lg p-2 text-slate-200"
+                  >
+                    <option value="Validade">Validade</option>
+                    <option value="Má conservação">Má conservação</option>
+                    <option value="Acidental">Acidental</option>
+                    <option value="Erro de pedido">Erro de pedido</option>
+                    <option value="Outro">Outro</option>
+                  </select>
+                </div>
+              )}
+
+              <div>
+                <label className="block text-slate-400 mb-1">Observações / Detalhes:</label>
+                <input
+                  type="text"
+                  placeholder="Ex: Garrafa quebrada durante o transporte..."
+                  value={formMov.observacao}
+                  onChange={(e) => setFormMov({ ...formMov, observacao: e.target.value })}
+                  className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2 text-slate-200"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setModalMovimentacao(null)}
+                  className="px-4 py-2 bg-slate-800 text-slate-300 rounded-lg"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className={`px-4 py-2 text-white rounded-lg font-semibold ${
+                    modalMovimentacao === 'PERDA' ? 'bg-rose-700 hover:bg-rose-600' : 'bg-emerald-600 hover:bg-emerald-500'
+                  }`}
+                >
+                  Confirmar Registro
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
     </div>

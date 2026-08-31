@@ -48,7 +48,7 @@ export default function Dashboard() {
 
   async function carregarDados() {
     setLoading(true);
-    const { data: dataProdutos, error: errProd } = await supabase.from('produtos').select('*').order('nome');
+    const { data: dataProdutos } = await supabase.from('produtos').select('*').order('nome');
     const { data: dataMov } = await supabase.from('movimentacoes').select('*, produtos(nome, tipo, distribuidora)').order('created_at', { ascending: false });
     const { data: dataVendas } = await supabase.from('vendas').select('*, produtos(nome, tipo, distribuidora, preco_custo)').order('created_at', { ascending: false });
 
@@ -59,12 +59,11 @@ export default function Dashboard() {
   }
 
   // CÁLCULOS DASHBOARD
-  const hoje = new Date().toISOString().split('T')[0];
-  const itensCriticos = produtos.filter(p => p.quantidade_estoque <= p.estoque_minimo);
-  const totalUnidades = produtos.reduce((acc, p) => acc + p.quantidade_estoque, 0);
-  const valorTotalEstoque = produtos.reduce((acc, p) => acc + (p.quantidade_estoque * Number(p.preco_custo)), 0);
+  const totalUnidades = produtos.reduce((acc, p) => acc + (p.quantidade_estoque || 0), 0);
+  const valorTotalEstoque = produtos.reduce((acc, p) => acc + ((p.quantidade_estoque || 0) * Number(p.preco_custo || 0)), 0);
+  const itensCriticos = produtos.filter(p => (p.quantidade_estoque || 0) <= (p.estoque_minimo || 0));
 
-  // AÇÕES
+  // AÇÕES DE CADASTRO E MOVIMENTAÇÃO
   async function salvarProduto(e) {
     e.preventDefault();
     await supabase.from('produtos').insert([{
@@ -75,6 +74,7 @@ export default function Dashboard() {
       quantidade_estoque: parseInt(novoProduto.quantidade_estoque || 0),
       estoque_minimo: parseInt(novoProduto.estoque_minimo || 5)
     }]);
+    setNovoProduto({ nome: '', distribuidora: 'AMBEV', tipo: 'Cerveja', preco_custo: '', preco_venda: '', quantidade_estoque: '', estoque_minimo: '' });
     setModalProduto(false);
     carregarDados();
   }
@@ -82,14 +82,15 @@ export default function Dashboard() {
   async function registrarMovimentacao(e) {
     e.preventDefault();
     const prod = produtos.find(p => p.id === novoMovimento.produto_id);
-    if (!prod) return;
+    if (!prod) return alert('Selecione um produto válido');
 
     const qtd = parseInt(novoMovimento.quantidade);
+    const saldoAtual = prod.quantidade_estoque || 0;
     const novoSaldo = novoMovimento.tipo_movimentacao === 'SAIDA_BAR' 
-      ? prod.quantidade_estoque - qtd 
-      : prod.quantidade_estoque + qtd;
+      ? saldoAtual - qtd 
+      : saldoAtual + qtd;
 
-    if (novoSaldo < 0) return alert('Estoque insuficiente!');
+    if (novoSaldo < 0) return alert('Estoque insuficiente para esta saída!');
 
     await supabase.from('movimentacoes').insert([{
       produto_id: novoMovimento.produto_id,
@@ -100,6 +101,7 @@ export default function Dashboard() {
 
     await supabase.from('produtos').update({ quantidade_estoque: novoSaldo }).eq('id', prod.id);
 
+    setNovoMovimento({ produto_id: '', tipo_movimentacao: 'SAIDA_BAR', quantidade: '', motivo: '' });
     setModalMovimento(false);
     carregarDados();
   }
@@ -107,32 +109,33 @@ export default function Dashboard() {
   async function registrarVenda(e) {
     e.preventDefault();
     const prod = produtos.find(p => p.id === novaVenda.produto_id);
-    if (!prod) return;
+    if (!prod) return alert('Selecione um produto válido');
 
     const qtd = parseInt(novaVenda.quantidade);
-    const lucro = (prod.preco_venda - prod.preco_custo) * qtd;
+    const lucro = ((prod.preco_venda || 0) - (prod.preco_custo || 0)) * qtd;
 
     await supabase.from('vendas').insert([{
       produto_id: prod.id,
       quantidade: qtd,
-      valor_unitario: prod.preco_venda,
+      valor_unitario: prod.preco_venda || 0,
       lucro_total: lucro
     }]);
 
+    setNovaVenda({ produto_id: '', quantidade: '' });
     setModalVenda(false);
     carregarDados();
   }
 
-  // FILTRAGEM
+  // FILTRAGEM DE TABELAS
   const produtosFiltrados = produtos.filter(p => {
-    const nomeValido = p.nome.toLowerCase().includes(buscaNome.toLowerCase());
-    const distValida = filtroDistribuidora === 'TODAS' || p.distribuidora === filtroDistribuidora;
+    const nomeValido = (p.nome || '').toLowerCase().includes(buscaNome.toLowerCase());
+    const distValida = filtroDistribuidora === 'TODAS' || p.distribuidora === filtroDistribuidora || p.fornecedor === filtroDistribuidora;
     const tipoValido = filtroTipo === 'TODOS' || p.tipo === filtroTipo;
     return nomeValido && distValida && tipoValido;
   });
 
   const vendasFiltradas = vendas.filter(v => {
-    const distValida = filtroDistribuidora === 'TODAS' || v.produtos?.distribuidora === filtroDistribuidora;
+    const distValida = filtroDistribuidora === 'TODAS' || v.produtos?.distribuidora === filtroDistribuidora || v.produtos?.fornecedor === filtroDistribuidora;
     const tipoValido = filtroTipo === 'TODOS' || v.produtos?.tipo === filtroTipo;
     const dataVenda = v.created_at?.split('T')[0];
     const inicioValido = !filtroDataInicio || dataVenda >= filtroDataInicio;
@@ -142,22 +145,28 @@ export default function Dashboard() {
 
   const lucroTotalFiltrado = vendasFiltradas.reduce((acc, v) => acc + Number(v.lucro_total || 0), 0);
 
-  // Componente Reutilizável de Renderizar Lista de Produtos Agrupados
+  // RENDERIZAÇÃO DINÂMICA DE OPÇÕES AGRUPADAS NO SELECT
   const renderOptionsAgrupadas = (incluirPreco = false) => {
-    return LISTA_DISTRIBUIDORAS.map(dist => {
-      const itensDaDist = produtos.filter(p => p.distribuidora === dist);
-      if (itensDaDist.length === 0) return null;
+    if (!produtos || produtos.length === 0) {
+      return <option disabled value="">Nenhum produto cadastrado no banco...</option>;
+    }
 
-      return (
-        <optgroup key={dist} label={`--- ${dist} ---`}>
-          {itensDaDist.map(p => (
-            <option key={p.id} value={p.id}>
-              {p.nome} {incluirPreco ? `(R$ ${Number(p.preco_venda).toFixed(2)})` : `(Saldo: ${p.quantidade_estoque})`}
-            </option>
-          ))}
-        </optgroup>
-      );
-    });
+    const grupos = produtos.reduce((acc, prod) => {
+      const dist = prod.distribuidora || prod.fornecedor || 'OUTRAS';
+      if (!acc[dist]) acc[dist] = [];
+      acc[dist].push(prod);
+      return acc;
+    }, {});
+
+    return Object.keys(grupos).map(dist => (
+      <optgroup key={dist} label={`--- ${dist} ---`}>
+        {grupos[dist].map(p => (
+          <option key={p.id} value={p.id}>
+            {p.nome} {incluirPreco ? `(R$ ${Number(p.preco_venda || 0).toFixed(2)})` : `(Saldo: ${p.quantidade_estoque ?? 0})`}
+          </option>
+        ))}
+      </optgroup>
+    ));
   };
 
   return (
@@ -266,15 +275,15 @@ export default function Dashboard() {
           </thead>
           <tbody className="divide-y divide-slate-800/60">
             {produtosFiltrados.map(p => {
-              const critico = p.quantidade_estoque <= p.estoque_minimo;
+              const critico = (p.quantidade_estoque || 0) <= (p.estoque_minimo || 0);
               return (
                 <tr key={p.id} className="hover:bg-slate-800/30 transition">
                   <td className="p-3.5 font-semibold text-slate-100">{p.nome}</td>
-                  <td className="p-3.5 text-amber-500/90 font-medium">{p.distribuidora}</td>
+                  <td className="p-3.5 text-amber-500/90 font-medium">{p.distribuidora || p.fornecedor || 'OUTRAS'}</td>
                   <td className="p-3.5 text-slate-400">{p.tipo}</td>
-                  <td className="p-3.5">R$ {Number(p.preco_custo).toFixed(2)}</td>
-                  <td className="p-3.5">R$ {Number(p.preco_venda).toFixed(2)}</td>
-                  <td className="p-3.5 font-bold text-slate-100">{p.quantidade_estoque} und</td>
+                  <td className="p-3.5">R$ {Number(p.preco_custo || 0).toFixed(2)}</td>
+                  <td className="p-3.5">R$ {Number(p.preco_venda || 0).toFixed(2)}</td>
+                  <td className="p-3.5 font-bold text-slate-100">{p.quantidade_estoque ?? 0} und</td>
                   <td className="p-3.5">
                     {critico ? (
                       <span className="bg-amber-500/10 text-amber-400 text-[10px] px-2 py-0.5 rounded border border-amber-500/20 font-bold">CRÍTICO</span>
@@ -337,6 +346,7 @@ export default function Dashboard() {
               <option value="SAIDA_BAR">Saída para o Bar</option>
               <option value="RETORNO_ESTOQUE">Retorno do Bar para Estoque</option>
             </select>
+
             <input required type="number" placeholder="Quantidade" value={novoMovimento.quantidade} onChange={e => setNovoMovimento({...novoMovimento, quantidade: e.target.value})} className="w-full bg-[#090d16] border border-slate-800 p-2 rounded text-xs" />
             
             {novoMovimento.tipo_movimentacao === 'RETORNO_ESTOQUE' && (

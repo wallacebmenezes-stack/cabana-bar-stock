@@ -11,18 +11,23 @@ const DISTRIBUIDORAS_PADRAO = [
   'OUTRA'
 ];
 
+// Converter vírgula (1,23) para ponto (1.23) e evitar valores NaN/0 zerados
+const parseNumero = (valor) => {
+  if (valor === null || valor === undefined || valor === '') return 0;
+  const str = valor.toString().replace(',', '.');
+  const num = parseFloat(str);
+  return isNaN(num) ? 0 : num;
+};
+
 export default function GestaoEstoqueBar() {
-  // Dados do Banco
   const [produtos, setProdutos] = useState([]);
   const [tiposBebida, setTiposBebida] = useState([]);
   const [movimentacoes, setMovimentacoes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [mensagemErro, setMensagemErro] = useState('');
 
-  // Navegação por Abas ('estoque' | 'entradas' | 'retornos' | 'perdas')
   const [abaAtiva, setAbaAtiva] = useState('estoque');
 
-  // Filtros Globais
   const [buscaNome, setBuscaNome] = useState('');
   const [produtosSelecionados, setProdutosSelecionados] = useState([]);
   const [tiposSelecionados, setTiposSelecionados] = useState([]);
@@ -30,23 +35,23 @@ export default function GestaoEstoqueBar() {
   const [dataInicio, setDataInicio] = useState('');
   const [dataFim, setDataFim] = useState('');
 
-  // Controle de Modais
   const [modalFiltros, setModalFiltros] = useState(false);
   const [modalNovoProduto, setModalNovoProduto] = useState(false);
   const [modalNovoTipo, setModalNovoTipo] = useState(false);
   const [modalEditarProduto, setModalEditarProduto] = useState(null);
+  
   const [modalEntrada, setModalEntrada] = useState(false);
+  const [modalSaida, setModalSaida] = useState(false);
   const [modalRetorno, setModalRetorno] = useState(false);
   const [modalPerda, setModalPerda] = useState(false);
 
-  // Forms
   const [novoProd, setNovoProd] = useState({
     nome: '',
     distribuidora: 'AMBEV',
     tipo: '',
-    preco_custo: 0,
-    preco_venda: 0,
-    quantidade_entrada: 0,
+    preco_custo: '',
+    preco_venda: '',
+    quantidade_entrada: '',
     estoque_critico: 5
   });
 
@@ -54,8 +59,15 @@ export default function GestaoEstoqueBar() {
 
   const [formEntrada, setFormEntrada] = useState({
     produto_id: '',
-    preco_unidade: 0,
+    preco_unidade: '',
     quantidade: 1
+  });
+
+  const [formSaida, setFormSaida] = useState({
+    produto_id: '',
+    preco_venda: '',
+    quantidade: 1,
+    observacao: 'Venda / Consumo'
   });
 
   const [formRetorno, setFormRetorno] = useState({
@@ -71,7 +83,6 @@ export default function GestaoEstoqueBar() {
     observacao: ''
   });
 
-  // CARREGAR DADOS
   const carregarDados = async () => {
     setLoading(true);
     setMensagemErro('');
@@ -109,18 +120,18 @@ export default function GestaoEstoqueBar() {
     carregarDados();
   }, []);
 
-  // CADASTRAR NOVO PRODUTO COM ENTRADA AUTOMÁTICA
+  // CADASTRAR NOVO PRODUTO
   const handleSalvarNovoProduto = async (e) => {
     e.preventDefault();
     if (!novoProd.nome.trim()) return alert('Informe o nome do produto!');
 
     try {
       const tipoFinal = novoProd.tipo || (tiposBebida[0]?.nome || 'Cerveja');
-      const qtdInicial = Number(novoProd.quantidade_entrada) || 0;
-      const precoCusto = Number(novoProd.preco_custo) || 0;
-      const precoVenda = Number(novoProd.preco_venda) || 0;
+      const qtdInicial = parseNumero(novoProd.quantidade_entrada);
+      const precoCusto = parseNumero(novoProd.preco_custo);
+      const precoVenda = parseNumero(novoProd.preco_venda);
+      const estoqueCritico = parseNumero(novoProd.estoque_critico) || 5;
 
-      // 1. Inserir produto
       const { data, error } = await supabase
         .from('produtos')
         .insert([
@@ -131,14 +142,13 @@ export default function GestaoEstoqueBar() {
             preco_custo: precoCusto,
             preco_venda: precoVenda,
             quantidade_estoque: qtdInicial,
-            estoque_critico: Number(novoProd.estoque_critico) || 5
+            estoque_critico: estoqueCritico
           }
         ])
         .select();
 
       if (error) throw error;
 
-      // 2. Registra histórico inicial de entrada se houver quantidade
       if (data && data[0] && qtdInicial > 0) {
         await supabase.from('movimentacoes').insert([
           {
@@ -157,9 +167,9 @@ export default function GestaoEstoqueBar() {
         nome: '',
         distribuidora: 'AMBEV',
         tipo: tiposBebida[0]?.nome || 'Cerveja',
-        preco_custo: 0,
-        preco_venda: 0,
-        quantidade_entrada: 0,
+        preco_custo: '',
+        preco_venda: '',
+        quantidade_entrada: '',
         estoque_critico: 5
       });
 
@@ -170,7 +180,7 @@ export default function GestaoEstoqueBar() {
     }
   };
 
-  // SALVAR EDIÇÃO DE PRODUTO (SEM SENHA)
+  // SALVAR EDIÇÃO DE PRODUTO
   const handleSalvarEdicaoProduto = async (e) => {
     e.preventDefault();
     try {
@@ -182,16 +192,18 @@ export default function GestaoEstoqueBar() {
           nome: nome.trim().toUpperCase(),
           distribuidora,
           tipo,
-          preco_custo: Number(preco_custo) || 0,
-          preco_venda: Number(preco_venda) || 0,
-          quantidade_estoque: Number(quantidade_estoque) || 0,
-          estoque_critico: Number(estoque_critico) || 0
+          preco_custo: parseNumero(preco_custo),
+          preco_venda: parseNumero(preco_venda),
+          quantidade_estoque: parseNumero(quantidade_estoque),
+          estoque_critico: parseNumero(estoque_critico)
         })
         .eq('id', id);
 
       if (error) throw error;
+      
       setModalEditarProduto(null);
       await carregarDados();
+      alert('Produto atualizado com sucesso!');
     } catch (err) {
       alert('Erro ao atualizar produto: ' + err.message);
     }
@@ -205,14 +217,13 @@ export default function GestaoEstoqueBar() {
     const prod = produtos.find((p) => p.id.toString() === formEntrada.produto_id.toString());
     if (!prod) return alert('Produto não encontrado!');
 
-    const qtd = Number(formEntrada.quantidade);
-    const precoUnit = Number(formEntrada.preco_unidade);
+    const qtd = parseNumero(formEntrada.quantidade);
+    const precoUnit = parseNumero(formEntrada.preco_unidade);
     if (qtd <= 0) return alert('Quantidade deve ser maior que zero!');
 
     try {
-      const novoEstoque = Number(prod.quantidade_estoque) + qtd;
+      const novoEstoque = parseNumero(prod.quantidade_estoque) + qtd;
 
-      // 1. Grava movimentação
       const { error: errMov } = await supabase.from('movimentacoes').insert([
         {
           produto_id: prod.id,
@@ -224,7 +235,6 @@ export default function GestaoEstoqueBar() {
       ]);
       if (errMov) throw errMov;
 
-      // 2. Atualiza estoque e preço de custo atual
       const { error: errProd } = await supabase
         .from('produtos')
         .update({
@@ -243,6 +253,52 @@ export default function GestaoEstoqueBar() {
     }
   };
 
+  // REGISTRAR SAÍDA
+  const handleRegistrarSaida = async (e) => {
+    e.preventDefault();
+    if (!formSaida.produto_id) return alert('Selecione um produto!');
+
+    const prod = produtos.find((p) => p.id.toString() === formSaida.produto_id.toString());
+    if (!prod) return alert('Produto não encontrado!');
+
+    const qtd = parseNumero(formSaida.quantidade);
+    const precoVendaAtualizado = parseNumero(formSaida.preco_venda);
+    if (qtd <= 0) return alert('Quantidade deve ser maior que zero!');
+
+    if (parseNumero(prod.quantidade_estoque) < qtd) {
+      return alert('Estoque insuficiente para registrar esta saída!');
+    }
+
+    try {
+      const novoEstoque = parseNumero(prod.quantidade_estoque) - qtd;
+
+      const { error: errMov } = await supabase.from('movimentacoes').insert([
+        {
+          produto_id: prod.id,
+          tipo_movimentacao: 'SAIDA',
+          quantidade: qtd,
+          preco_custo_momento: prod.preco_custo,
+          preco_venda_momento: precoVendaAtualizado || prod.preco_venda,
+          observacao: formSaida.observacao
+        }
+      ]);
+      if (errMov) throw errMov;
+
+      const { error: errProd } = await supabase
+        .from('produtos')
+        .update({ quantidade_estoque: novoEstoque })
+        .eq('id', prod.id);
+
+      if (errProd) throw errProd;
+
+      setModalSaida(false);
+      await carregarDados();
+      alert('Saída registrada com sucesso!');
+    } catch (err) {
+      alert('Erro ao registrar saída: ' + err.message);
+    }
+  };
+
   // REGISTRAR RETORNO AO ESTOQUE
   const handleRegistrarRetorno = async (e) => {
     e.preventDefault();
@@ -251,11 +307,11 @@ export default function GestaoEstoqueBar() {
     const prod = produtos.find((p) => p.id.toString() === formRetorno.produto_id.toString());
     if (!prod) return alert('Produto não encontrado!');
 
-    const qtd = Number(formRetorno.quantidade);
+    const qtd = parseNumero(formRetorno.quantidade);
     if (qtd <= 0) return alert('Quantidade deve ser maior que zero!');
 
     try {
-      const novoEstoque = Number(prod.quantidade_estoque) + qtd;
+      const novoEstoque = parseNumero(prod.quantidade_estoque) + qtd;
 
       const { error: errMov } = await supabase.from('movimentacoes').insert([
         {
@@ -292,11 +348,11 @@ export default function GestaoEstoqueBar() {
     const prod = produtos.find((p) => p.id.toString() === formPerda.produto_id.toString());
     if (!prod) return alert('Produto não encontrado!');
 
-    const qtd = Number(formPerda.quantidade);
+    const qtd = parseNumero(formPerda.quantidade);
     if (qtd <= 0) return alert('Quantidade deve ser maior que zero!');
 
     try {
-      const novoEstoque = Math.max(0, Number(prod.quantidade_estoque) - qtd);
+      const novoEstoque = Math.max(0, parseNumero(prod.quantidade_estoque) - qtd);
 
       const { error: errMov } = await supabase.from('movimentacoes').insert([
         {
@@ -341,7 +397,6 @@ export default function GestaoEstoqueBar() {
     }
   };
 
-  // AUXILIARES DE FILTRO
   const toggleSelecaoMultipla = (item, lista, setLista) => {
     if (lista.includes(item)) {
       setLista(lista.filter((i) => i !== item));
@@ -359,7 +414,6 @@ export default function GestaoEstoqueBar() {
     setDataFim('');
   };
 
-  // FILTRAGEM DE PRODUTOS
   const produtosFiltrados = produtos.filter((p) => {
     const atendeNome = p.nome.toLowerCase().includes(buscaNome.toLowerCase());
     const atendeProdutos = produtosSelecionados.length === 0 || produtosSelecionados.includes(p.nome);
@@ -367,7 +421,6 @@ export default function GestaoEstoqueBar() {
     return atendeNome && atendeProdutos && atendeTipo;
   });
 
-  // FILTRAGEM DE HISTÓRICOS
   const movimentacoesFiltradas = movimentacoes.filter((m) => {
     const dataMov = new Date(m.created_at);
     if (dataInicio && dataMov < new Date(dataInicio + 'T00:00:00')) return false;
@@ -377,6 +430,7 @@ export default function GestaoEstoqueBar() {
     if (tiposSelecionados.length > 0 && !tiposSelecionados.includes(m.produtos?.tipo)) return false;
 
     if (abaAtiva === 'entradas' && m.tipo_movimentacao !== 'ENTRADA') return false;
+    if (abaAtiva === 'saidas' && m.tipo_movimentacao !== 'SAIDA') return false;
     if (abaAtiva === 'retornos' && m.tipo_movimentacao !== 'RETORNO') return false;
     if (abaAtiva === 'perdas') {
       if (m.tipo_movimentacao !== 'PERDA') return false;
@@ -385,20 +439,20 @@ export default function GestaoEstoqueBar() {
     return true;
   });
 
-  // MÉTRICAS
-  const totalUnidades = produtos.reduce((acc, p) => acc + (p.quantidade_estoque || 0), 0);
-  const valorEstoqueCusto = produtos.reduce((acc, p) => acc + (p.quantidade_estoque || 0) * (p.preco_custo || 0), 0);
-  const alertasEstoqueBaixo = produtos.filter((p) => p.quantidade_estoque <= p.estoque_critico).length;
+  const totalUnidades = produtos.reduce((acc, p) => acc + parseNumero(p.quantidade_estoque), 0);
+  const valorEstoqueCusto = produtos.reduce((acc, p) => acc + parseNumero(p.quantidade_estoque) * parseNumero(p.preco_custo), 0);
+  const alertasEstoqueBaixo = produtos.filter((p) => parseNumero(p.quantidade_estoque) <= parseNumero(p.estoque_critico)).length;
   const totalPerdasQtd = movimentacoes
     .filter((m) => m.tipo_movimentacao === 'PERDA')
-    .reduce((acc, m) => acc + m.quantidade, 0);
+    .reduce((acc, m) => acc + parseNumero(m.quantidade), 0);
 
   const totalFiltrosAtivos =
     produtosSelecionados.length + tiposSelecionados.length + motivosPerdaSelecionados.length + (dataInicio ? 1 : 0) + (dataFim ? 1 : 0);
 
   return (
     <div className="min-h-screen bg-[#0a0e17] text-slate-100 p-4 md:p-8 font-sans">
-      {/* Cabeçalho */}
+      
+      {/* HEADER DE TÍTULO E BOTÕES DE MOVIMENTAÇÃO */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
         <div>
           <p className="text-xs uppercase tracking-wider text-amber-500 font-semibold">Cabana do Sol • Gestão de Bar</p>
@@ -406,31 +460,6 @@ export default function GestaoEstoqueBar() {
         </div>
 
         <div className="flex flex-wrap gap-2">
-          <button
-            onClick={() => setModalNovoTipo(true)}
-            className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs px-3 py-2 rounded-lg font-medium transition"
-          >
-            + Tipo de Bebida
-          </button>
-
-          <button
-            onClick={() => {
-              setNovoProd({
-                nome: '',
-                distribuidora: 'AMBEV',
-                tipo: tiposBebida[0]?.nome || 'Cerveja',
-                preco_custo: 0,
-                preco_venda: 0,
-                quantidade_entrada: 0,
-                estoque_critico: 5
-              });
-              setModalNovoProduto(true);
-            }}
-            className="bg-amber-600 hover:bg-amber-500 text-white text-xs px-4 py-2 rounded-lg font-semibold transition"
-          >
-            + Novo Produto
-          </button>
-
           <button
             onClick={() => {
               if (produtos.length === 0) return alert('Cadastre ao menos um produto!');
@@ -441,6 +470,18 @@ export default function GestaoEstoqueBar() {
             className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs px-4 py-2 rounded-lg font-semibold transition"
           >
             ↙ Registrar Entrada
+          </button>
+
+          <button
+            onClick={() => {
+              if (produtos.length === 0) return alert('Cadastre ao menos um produto!');
+              const p1 = produtos[0];
+              setFormSaida({ produto_id: p1.id, preco_venda: p1.preco_venda || 0, quantidade: 1, observacao: 'Venda / Consumo' });
+              setModalSaida(true);
+            }}
+            className="bg-sky-600 hover:bg-sky-500 text-white text-xs px-4 py-2 rounded-lg font-semibold transition"
+          >
+            ↗ Registrar Saída
           </button>
 
           <button
@@ -473,7 +514,7 @@ export default function GestaoEstoqueBar() {
         </div>
       )}
 
-      {/* Cards de Métricas */}
+      {/* CARDS DE RESUMO */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
         <div className="bg-[#111726] border border-slate-800/80 p-4 rounded-xl">
           <p className="text-xs text-slate-400 font-medium">TOTAL DE UNIDADES</p>
@@ -482,7 +523,7 @@ export default function GestaoEstoqueBar() {
         <div className="bg-[#111726] border border-slate-800/80 p-4 rounded-xl">
           <p className="text-xs text-slate-400 font-medium">VALOR EM ESTOQUE (CUSTO)</p>
           <p className="text-2xl font-bold text-emerald-400 mt-1">
-            R$ {valorEstoqueCusto.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+            R$ {valorEstoqueCusto.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </p>
         </div>
         <div className="bg-[#111726] border border-slate-800/80 p-4 rounded-xl">
@@ -499,11 +540,12 @@ export default function GestaoEstoqueBar() {
         </div>
       </div>
 
-      {/* Navegação entre Abas */}
+      {/* ABAS DE NAVEGAÇÃO */}
       <div className="flex border-b border-slate-800 mb-6 space-x-2 overflow-x-auto pb-1">
         {[
           { id: 'estoque', label: 'Estoque Principal' },
           { id: 'entradas', label: 'Histórico de Entradas' },
+          { id: 'saidas', label: 'Histórico de Saídas' },
           { id: 'retornos', label: 'Retornos ao Estoque' },
           { id: 'perdas', label: 'Perdas & Descartes' },
         ].map((aba) => (
@@ -521,9 +563,9 @@ export default function GestaoEstoqueBar() {
         ))}
       </div>
 
-      {/* Barra de Filtros e Busca Limpa */}
+      {/* BARRA DE PESQUISA, FILTROS E NOVOS CADASTROS */}
       <div className="bg-[#111726] border border-slate-800/80 p-3 rounded-xl mb-6 flex flex-col md:flex-row items-center justify-between gap-3 text-xs">
-        <div className="w-full md:w-80">
+        <div className="w-full md:w-80 flex gap-2">
           <input
             type="text"
             placeholder="🔍 Buscar produto por nome..."
@@ -533,7 +575,34 @@ export default function GestaoEstoqueBar() {
           />
         </div>
 
-        <div className="flex items-center gap-2 w-full md:w-auto justify-end">
+        <div className="flex flex-wrap items-center gap-2 w-full md:w-auto justify-end">
+          <button
+            onClick={() => setModalNovoTipo(true)}
+            className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs px-3 py-2 rounded-lg font-medium transition"
+          >
+            + Tipo de Bebida
+          </button>
+
+          <button
+            onClick={() => {
+              setNovoProd({
+                nome: '',
+                distribuidora: 'AMBEV',
+                tipo: tiposBebida[0]?.nome || '',
+                preco_custo: '',
+                preco_venda: '',
+                quantidade_entrada: '',
+                estoque_critico: 5
+              });
+              setModalNovoProduto(true);
+            }}
+            className="bg-amber-600 hover:bg-amber-500 text-white text-xs px-4 py-2 rounded-lg font-semibold transition"
+          >
+            + Novo Produto
+          </button>
+
+          <div className="w-px h-6 bg-slate-700 mx-1 hidden md:block"></div>
+
           {totalFiltrosAtivos > 0 && (
             <button
               onClick={limparFiltros}
@@ -557,7 +626,7 @@ export default function GestaoEstoqueBar() {
         </div>
       </div>
 
-      {/* TABELA PRINCIPAL DE ESTOQUE (Clique na linha para editar) */}
+      {/* TABELAS DE DADOS */}
       {abaAtiva === 'estoque' && (
         <div className="bg-[#111726] border border-slate-800/80 rounded-xl overflow-x-auto">
           <table className="w-full text-left text-xs text-slate-300">
@@ -581,7 +650,7 @@ export default function GestaoEstoqueBar() {
                 </tr>
               ) : (
                 produtosFiltrados.map((p) => {
-                  const isCritico = p.quantidade_estoque <= p.estoque_critico;
+                  const isCritico = parseNumero(p.quantidade_estoque) <= parseNumero(p.estoque_critico);
                   return (
                     <tr
                       key={p.id}
@@ -591,9 +660,9 @@ export default function GestaoEstoqueBar() {
                     >
                       <td className="p-3 font-semibold text-white">{p.nome}</td>
                       <td className="p-3 text-amber-500 font-medium">{p.distribuidora}</td>
-                      <td className="p-3 text-slate-400">{p.tipo}</td>
-                      <td className="p-3">R$ {Number(p.preco_custo).toFixed(2)}</td>
-                      <td className="p-3">R$ {Number(p.preco_venda).toFixed(2)}</td>
+                      <td className="p-3 text-slate-400">{p.tipo || '-'}</td>
+                      <td className="p-3">R$ {parseNumero(p.preco_custo).toFixed(2)}</td>
+                      <td className="p-3">R$ {parseNumero(p.preco_venda).toFixed(2)}</td>
                       <td className="p-3 font-bold text-white">{p.quantidade_estoque} und</td>
                       <td className="p-3">
                         {isCritico ? (
@@ -616,7 +685,6 @@ export default function GestaoEstoqueBar() {
         </div>
       )}
 
-      {/* TABELAS DE HISTÓRICOS */}
       {abaAtiva !== 'estoque' && (
         <div className="bg-[#111726] border border-slate-800/80 rounded-xl overflow-x-auto">
           <table className="w-full text-left text-xs text-slate-300">
@@ -626,7 +694,8 @@ export default function GestaoEstoqueBar() {
                 <th className="p-3">Produto</th>
                 <th className="p-3">Tipo Bebida</th>
                 <th className="p-3">Quantidade</th>
-                <th className="p-3">Preço Unidade</th>
+                {abaAtiva === 'entradas' && <th className="p-3">Preço Custo (Un)</th>}
+                {abaAtiva === 'saidas' && <th className="p-3">Preço Venda (Un)</th>}
                 {abaAtiva === 'perdas' && <th className="p-3">Motivo da Perda</th>}
                 <th className="p-3">Observação / Detalhe</th>
               </tr>
@@ -634,8 +703,8 @@ export default function GestaoEstoqueBar() {
             <tbody className="divide-y divide-slate-800/60">
               {movimentacoesFiltradas.length === 0 ? (
                 <tr>
-                  <td colSpan="7" className="p-8 text-center text-slate-500">
-                    Nenhum registro encontrado para este filtro.
+                  <td colSpan="8" className="p-8 text-center text-slate-500">
+                    Nenhum registro encontrado para este filtro de datas ou produtos.
                   </td>
                 </tr>
               ) : (
@@ -647,7 +716,14 @@ export default function GestaoEstoqueBar() {
                     <td className="p-3 font-semibold text-white">{m.produtos?.nome || 'Produto Removido'}</td>
                     <td className="p-3 text-slate-400">{m.produtos?.tipo || '-'}</td>
                     <td className="p-3 font-bold text-slate-200">{m.quantidade} und</td>
-                    <td className="p-3">R$ {Number(m.preco_custo_momento).toFixed(2)}</td>
+                    
+                    {abaAtiva === 'entradas' && (
+                      <td className="p-3">R$ {parseNumero(m.preco_custo_momento).toFixed(2)}</td>
+                    )}
+                    {abaAtiva === 'saidas' && (
+                      <td className="p-3 text-emerald-400">R$ {parseNumero(m.preco_venda_momento).toFixed(2)}</td>
+                    )}
+                    
                     {abaAtiva === 'perdas' && (
                       <td className="p-3 text-rose-400 font-semibold">{m.motivo_perda || 'Não informado'}</td>
                     )}
@@ -660,16 +736,37 @@ export default function GestaoEstoqueBar() {
         </div>
       )}
 
-      {/* --- MODAIS DE AÇÃO --- */}
-
-      {/* POP-UP MODAL DE FILTROS */}
+      {/* MODAL FILTROS (DIÁRIO / PERÍODO) */}
       {modalFiltros && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <div className="bg-[#111726] border border-slate-800 p-6 rounded-2xl w-full max-w-lg space-y-4">
-            <h3 className="text-base font-bold text-white border-b border-slate-800 pb-2">Filtros de Seleção</h3>
+            <h3 className="text-base font-bold text-white border-b border-slate-800 pb-2">Filtros de Seleção (Diário / Histórico)</h3>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
-              {/* Filtro Tipos */}
+              <div className="col-span-2 border-b border-slate-800 pb-3">
+                <label className="block text-amber-400 mb-1 font-semibold">🔍 Filtrar por Período de Data:</label>
+                <div className="flex gap-2">
+                  <div className="w-full">
+                    <span className="text-slate-500 block mb-1">Data Início:</span>
+                    <input
+                      type="date"
+                      value={dataInicio}
+                      onChange={(e) => setDataInicio(e.target.value)}
+                      className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg px-2 py-1.5 text-slate-200"
+                    />
+                  </div>
+                  <div className="w-full">
+                    <span className="text-slate-500 block mb-1">Data Fim:</span>
+                    <input
+                      type="date"
+                      value={dataFim}
+                      onChange={(e) => setDataFim(e.target.value)}
+                      className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg px-2 py-1.5 text-slate-200"
+                    />
+                  </div>
+                </div>
+              </div>
+
               <div>
                 <label className="block text-slate-400 mb-1 font-semibold">Tipos de Bebida:</label>
                 <div className="max-h-36 overflow-y-auto bg-[#0a0e17] border border-slate-700 rounded-lg p-2 space-y-1">
@@ -687,7 +784,6 @@ export default function GestaoEstoqueBar() {
                 </div>
               </div>
 
-              {/* Filtro Produtos */}
               <div>
                 <label className="block text-slate-400 mb-1 font-semibold">Produtos:</label>
                 <div className="max-h-36 overflow-y-auto bg-[#0a0e17] border border-slate-700 rounded-lg p-2 space-y-1">
@@ -702,45 +798,6 @@ export default function GestaoEstoqueBar() {
                       <span className="truncate">{p.nome}</span>
                     </label>
                   ))}
-                </div>
-              </div>
-
-              {/* Filtro Motivos Perda (se aba de perdas) */}
-              {abaAtiva === 'perdas' && (
-                <div className="col-span-2">
-                  <label className="block text-slate-400 mb-1 font-semibold">Motivos de Perda:</label>
-                  <div className="flex flex-wrap gap-2">
-                    {['Validade', 'Má conservação', 'Acidental', 'Erro de pedido', 'Outro'].map((m) => (
-                      <label key={m} className="flex items-center gap-1.5 bg-[#0a0e17] border border-slate-700 px-2.5 py-1 rounded-lg text-slate-300 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={motivosPerdaSelecionados.includes(m)}
-                          onChange={() => toggleSelecaoMultipla(m, motivosPerdaSelecionados, setMotivosPerdaSelecionados)}
-                          className="accent-rose-500"
-                        />
-                        <span>{m}</span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Filtro Datas */}
-              <div className="col-span-2 border-t border-slate-800 pt-3">
-                <label className="block text-slate-400 mb-1 font-semibold">Período por Data:</label>
-                <div className="flex gap-2">
-                  <input
-                    type="date"
-                    value={dataInicio}
-                    onChange={(e) => setDataInicio(e.target.value)}
-                    className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg px-2 py-1.5 text-slate-200"
-                  />
-                  <input
-                    type="date"
-                    value={dataFim}
-                    onChange={(e) => setDataFim(e.target.value)}
-                    className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg px-2 py-1.5 text-slate-200"
-                  />
                 </div>
               </div>
             </div>
@@ -768,7 +825,6 @@ export default function GestaoEstoqueBar() {
                 <label className="block text-slate-400 mb-1">Nome do Produto:</label>
                 <input
                   type="text"
-                  placeholder="Ex: CERVEJA HEINEKEN LONG NECK"
                   value={novoProd.nome}
                   onChange={(e) => setNovoProd({ ...novoProd, nome: e.target.value })}
                   className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2.5 text-slate-200 uppercase"
@@ -780,7 +836,7 @@ export default function GestaoEstoqueBar() {
                 <div>
                   <label className="block text-slate-400 mb-1">Distribuidora:</label>
                   <select
-                    value={novoProd.distribuidora}
+                    value={novoProd.distribuidora || ''}
                     onChange={(e) => setNovoProd({ ...novoProd, distribuidora: e.target.value })}
                     className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2 text-slate-200"
                   >
@@ -792,13 +848,15 @@ export default function GestaoEstoqueBar() {
 
                 <div>
                   <label className="block text-slate-400 mb-1 font-semibold">Tipo do Produto:</label>
+                  {/* CORREÇÃO DO SELECT DE TIPO */}
                   <select
-                    value={novoProd.tipo}
+                    value={novoProd.tipo || ''}
                     onChange={(e) => setNovoProd({ ...novoProd, tipo: e.target.value })}
                     className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2 text-slate-200"
                   >
-                    {tiposBebida.map((t) => (
-                      <option key={t.id} value={t.nome}>{t.nome}</option>
+                    <option value="" disabled>Selecione um tipo...</option>
+                    {tiposBebida.map((t, index) => (
+                      <option key={t.id || index} value={t.nome}>{t.nome}</option>
                     ))}
                   </select>
                 </div>
@@ -808,9 +866,8 @@ export default function GestaoEstoqueBar() {
                 <div>
                   <label className="block text-slate-400 mb-1">Preço Custo (R$):</label>
                   <input
-                    type="number"
-                    step="0.01"
-                    value={novoProd.preco_custo}
+                    type="text"
+                    value={novoProd.preco_custo || ''}
                     onChange={(e) => setNovoProd({ ...novoProd, preco_custo: e.target.value })}
                     className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2 text-slate-200"
                   />
@@ -818,9 +875,8 @@ export default function GestaoEstoqueBar() {
                 <div>
                   <label className="block text-slate-400 mb-1">Preço Venda (R$):</label>
                   <input
-                    type="number"
-                    step="0.01"
-                    value={novoProd.preco_venda}
+                    type="text"
+                    value={novoProd.preco_venda || ''}
                     onChange={(e) => setNovoProd({ ...novoProd, preco_venda: e.target.value })}
                     className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2 text-slate-200"
                   />
@@ -833,7 +889,7 @@ export default function GestaoEstoqueBar() {
                   <input
                     type="number"
                     min="0"
-                    value={novoProd.quantidade_entrada}
+                    value={novoProd.quantidade_entrada || ''}
                     onChange={(e) => setNovoProd({ ...novoProd, quantidade_entrada: e.target.value })}
                     className="w-full bg-[#0a0e17] border border-amber-500/50 rounded-lg p-2 text-white font-bold"
                   />
@@ -842,7 +898,7 @@ export default function GestaoEstoqueBar() {
                   <label className="block text-slate-400 mb-1">Estoque Crítico:</label>
                   <input
                     type="number"
-                    value={novoProd.estoque_critico}
+                    value={novoProd.estoque_critico || ''}
                     onChange={(e) => setNovoProd({ ...novoProd, estoque_critico: e.target.value })}
                     className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2 text-slate-200"
                   />
@@ -869,7 +925,115 @@ export default function GestaoEstoqueBar() {
         </div>
       )}
 
-      {/* MODAL REGISTRAR ENTRADA (SIMPLIFICADO) */}
+      {/* MODAL EDITAR PRODUTO */}
+      {modalEditarProduto && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-[#111726] border border-slate-800 p-6 rounded-2xl w-full max-w-md">
+            <h3 className="text-lg font-bold text-white mb-4">Editar Produto & Quantidade</h3>
+            <form onSubmit={handleSalvarEdicaoProduto} className="space-y-3 text-xs">
+              <div>
+                <label className="block text-slate-400 mb-1 font-semibold">Nome do Produto:</label>
+                <input
+                  type="text"
+                  value={modalEditarProduto.nome || ''}
+                  onChange={(e) => setModalEditarProduto({ ...modalEditarProduto, nome: e.target.value })}
+                  className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2 text-slate-200 uppercase"
+                  required
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-slate-400 mb-1">Distribuidora:</label>
+                  <select
+                    value={modalEditarProduto.distribuidora || ''}
+                    onChange={(e) => setModalEditarProduto({ ...modalEditarProduto, distribuidora: e.target.value })}
+                    className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2 text-slate-200"
+                  >
+                    {DISTRIBUIDORAS_PADRAO.map((d) => (
+                      <option key={d} value={d}>{d}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-slate-400 mb-1">Tipo / Segmento:</label>
+                  {/* CORREÇÃO DO BUGS DA LISTA DE TIPO */}
+                  <select
+                    value={modalEditarProduto.tipo || ''}
+                    onChange={(e) => setModalEditarProduto({ ...modalEditarProduto, tipo: e.target.value })}
+                    className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2 text-slate-200"
+                  >
+                    <option value="" disabled>Selecione um tipo...</option>
+                    {tiposBebida.map((t, index) => (
+                      <option key={t.id || index} value={t.nome}>{t.nome}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-slate-400 mb-1">Preço Custo (R$):</label>
+                  <input
+                    type="text"
+                    value={modalEditarProduto.preco_custo || ''}
+                    onChange={(e) => setModalEditarProduto({ ...modalEditarProduto, preco_custo: e.target.value })}
+                    className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2 text-slate-200"
+                  />
+                </div>
+                <div>
+                  <label className="block text-slate-400 mb-1">Preço Venda (R$):</label>
+                  <input
+                    type="text"
+                    value={modalEditarProduto.preco_venda || ''}
+                    onChange={(e) => setModalEditarProduto({ ...modalEditarProduto, preco_venda: e.target.value })}
+                    className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2 text-slate-200"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-amber-400 mb-1 font-semibold">Quantidade Atual:</label>
+                  <input
+                    type="number"
+                    value={modalEditarProduto.quantidade_estoque ?? ''}
+                    onChange={(e) => setModalEditarProduto({ ...modalEditarProduto, quantidade_estoque: e.target.value })}
+                    className="w-full bg-[#0a0e17] border border-amber-500/50 rounded-lg p-2 text-white font-bold"
+                  />
+                </div>
+                <div>
+                  <label className="block text-slate-400 mb-1">Estoque Crítico:</label>
+                  <input
+                    type="number"
+                    value={modalEditarProduto.estoque_critico ?? ''}
+                    onChange={(e) => setModalEditarProduto({ ...modalEditarProduto, estoque_critico: e.target.value })}
+                    className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2 text-slate-200"
+                  />
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-3">
+                <button
+                  type="button"
+                  onClick={() => setModalEditarProduto(null)}
+                  className="px-4 py-2 bg-slate-800 text-slate-300 rounded-lg"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-amber-600 text-white rounded-lg font-semibold hover:bg-amber-500"
+                >
+                  Salvar Alterações
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL REGISTRAR ENTRADA */}
       {modalEntrada && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <div className="bg-[#111726] border border-slate-800 p-6 rounded-2xl w-full max-w-md">
@@ -885,7 +1049,7 @@ export default function GestaoEstoqueBar() {
                     setFormEntrada({
                       ...formEntrada,
                       produto_id: id,
-                      preco_unidade: p ? p.preco_custo : 0
+                      preco_unidade: p ? p.preco_custo : ''
                     });
                   }}
                   className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2.5 text-slate-200"
@@ -900,11 +1064,10 @@ export default function GestaoEstoqueBar() {
               </div>
 
               <div>
-                <label className="block text-slate-400 mb-1 font-semibold">Preço Unidade (R$):</label>
+                <label className="block text-slate-400 mb-1 font-semibold">Preço Custo Unidade (R$):</label>
                 <input
-                  type="number"
-                  step="0.01"
-                  value={formEntrada.preco_unidade}
+                  type="text"
+                  value={formEntrada.preco_unidade || ''}
                   onChange={(e) => setFormEntrada({ ...formEntrada, preco_unidade: e.target.value })}
                   className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2.5 text-slate-200"
                   required
@@ -912,11 +1075,11 @@ export default function GestaoEstoqueBar() {
               </div>
 
               <div>
-                <label className="block text-emerald-400 mb-1 font-semibold">Quantidade Total (Entrada):</label>
+                <label className="block text-emerald-400 mb-1 font-semibold">Quantidade de Entrada:</label>
                 <input
                   type="number"
                   min="1"
-                  value={formEntrada.quantidade}
+                  value={formEntrada.quantidade || ''}
                   onChange={(e) => setFormEntrada({ ...formEntrada, quantidade: e.target.value })}
                   className="w-full bg-[#0a0e17] border border-emerald-500/50 rounded-lg p-2.5 text-white font-bold"
                   required
@@ -936,6 +1099,88 @@ export default function GestaoEstoqueBar() {
                   className="px-4 py-2 bg-emerald-600 text-white rounded-lg font-semibold hover:bg-emerald-500"
                 >
                   Confirmar Entrada
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL REGISTRAR SAÍDA */}
+      {modalSaida && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-[#111726] border border-slate-800 p-6 rounded-2xl w-full max-w-md">
+            <h3 className="text-base font-bold text-white mb-3">Registrar Saída (Consumo/Venda)</h3>
+            <form onSubmit={handleRegistrarSaida} className="space-y-3 text-xs">
+              <div>
+                <label className="block text-slate-400 mb-1 font-semibold">Produto:</label>
+                <select
+                  value={formSaida.produto_id}
+                  onChange={(e) => {
+                    const id = e.target.value;
+                    const p = produtos.find((item) => item.id.toString() === id);
+                    setFormSaida({
+                      ...formSaida,
+                      produto_id: id,
+                      preco_venda: p ? p.preco_venda : ''
+                    });
+                  }}
+                  className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2.5 text-slate-200"
+                  required
+                >
+                  {produtos.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.nome} (Atual: {p.quantidade_estoque} und)
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-sky-400 mb-1 font-semibold">Quantidade Vendida/Consumida:</label>
+                <input
+                  type="number"
+                  min="1"
+                  value={formSaida.quantidade || ''}
+                  onChange={(e) => setFormSaida({ ...formSaida, quantidade: e.target.value })}
+                  className="w-full bg-[#0a0e17] border border-sky-500/50 rounded-lg p-2.5 text-white font-bold"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-400 mb-1 font-semibold">Preço Venda Unidade (R$):</label>
+                <input
+                  type="text"
+                  value={formSaida.preco_venda || ''}
+                  onChange={(e) => setFormSaida({ ...formSaida, preco_venda: e.target.value })}
+                  className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2.5 text-slate-200"
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-400 mb-1">Observação:</label>
+                <input
+                  type="text"
+                  value={formSaida.observacao || ''}
+                  onChange={(e) => setFormSaida({ ...formSaida, observacao: e.target.value })}
+                  className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2.5 text-slate-200"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-3">
+                <button
+                  type="button"
+                  onClick={() => setModalSaida(false)}
+                  className="px-4 py-2 bg-slate-800 text-slate-300 rounded-lg"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-sky-600 text-white rounded-lg font-semibold hover:bg-sky-500"
+                >
+                  Confirmar Saída
                 </button>
               </div>
             </form>
@@ -970,7 +1215,7 @@ export default function GestaoEstoqueBar() {
                 <input
                   type="number"
                   min="1"
-                  value={formRetorno.quantidade}
+                  value={formRetorno.quantidade || ''}
                   onChange={(e) => setFormRetorno({ ...formRetorno, quantidade: e.target.value })}
                   className="w-full bg-[#0a0e17] border border-indigo-500/50 rounded-lg p-2.5 text-white font-bold"
                   required
@@ -981,8 +1226,7 @@ export default function GestaoEstoqueBar() {
                 <label className="block text-slate-400 mb-1 font-semibold">Motivo do Retorno:</label>
                 <input
                   type="text"
-                  placeholder="Ex: Sobra do Bar, Evento Encerrado..."
-                  value={formRetorno.motivo}
+                  value={formRetorno.motivo || ''}
                   onChange={(e) => setFormRetorno({ ...formRetorno, motivo: e.target.value })}
                   className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2.5 text-slate-200"
                   required
@@ -1002,114 +1246,6 @@ export default function GestaoEstoqueBar() {
                   className="px-4 py-2 bg-indigo-600 text-white rounded-lg font-semibold hover:bg-indigo-500"
                 >
                   Confirmar Retorno
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* MODAL EDITAR PRODUTO (DIRETO AO CLICAR NA LINHA) */}
-      {modalEditarProduto && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <div className="bg-[#111726] border border-slate-800 p-6 rounded-2xl w-full max-w-md">
-            <h3 className="text-lg font-bold text-white mb-4">Editar Produto & Quantidade</h3>
-            <form onSubmit={handleSalvarEdicaoProduto} className="space-y-3 text-xs">
-              <div>
-                <label className="block text-slate-400 mb-1 font-semibold">Nome do Produto:</label>
-                <input
-                  type="text"
-                  value={modalEditarProduto.nome}
-                  onChange={(e) => setModalEditarProduto({ ...modalEditarProduto, nome: e.target.value })}
-                  className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2 text-slate-200 uppercase"
-                  required
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block text-slate-400 mb-1">Distribuidora:</label>
-                  <select
-                    value={modalEditarProduto.distribuidora}
-                    onChange={(e) => setModalEditarProduto({ ...modalEditarProduto, distribuidora: e.target.value })}
-                    className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2 text-slate-200"
-                  >
-                    {DISTRIBUIDORAS_PADRAO.map((d) => (
-                      <option key={d} value={d}>{d}</option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-slate-400 mb-1">Tipo / Segmento:</label>
-                  <select
-                    value={modalEditarProduto.tipo}
-                    onChange={(e) => setModalEditarProduto({ ...modalEditarProduto, tipo: e.target.value })}
-                    className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2 text-slate-200"
-                  >
-                    {tiposBebida.map((t) => (
-                      <option key={t.id} value={t.nome}>{t.nome}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block text-slate-400 mb-1">Preço Custo (R$):</label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    value={modalEditarProduto.preco_custo}
-                    onChange={(e) => setModalEditarProduto({ ...modalEditarProduto, preco_custo: e.target.value })}
-                    className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2 text-slate-200"
-                  />
-                </div>
-                <div>
-                  <label className="block text-slate-400 mb-1">Preço Venda (R$):</label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    value={modalEditarProduto.preco_venda}
-                    onChange={(e) => setModalEditarProduto({ ...modalEditarProduto, preco_venda: e.target.value })}
-                    className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2 text-slate-200"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block text-amber-400 mb-1 font-semibold">Quantidade Atual:</label>
-                  <input
-                    type="number"
-                    value={modalEditarProduto.quantidade_estoque}
-                    onChange={(e) => setModalEditarProduto({ ...modalEditarProduto, quantidade_estoque: e.target.value })}
-                    className="w-full bg-[#0a0e17] border border-amber-500/50 rounded-lg p-2 text-white font-bold"
-                  />
-                </div>
-                <div>
-                  <label className="block text-slate-400 mb-1">Estoque Crítico:</label>
-                  <input
-                    type="number"
-                    value={modalEditarProduto.estoque_critico}
-                    onChange={(e) => setModalEditarProduto({ ...modalEditarProduto, estoque_critico: e.target.value })}
-                    className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2 text-slate-200"
-                  />
-                </div>
-              </div>
-
-              <div className="flex justify-end gap-2 pt-3">
-                <button
-                  type="button"
-                  onClick={() => setModalEditarProduto(null)}
-                  className="px-4 py-2 bg-slate-800 text-slate-300 rounded-lg"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 bg-amber-600 text-white rounded-lg font-semibold hover:bg-amber-500"
-                >
-                  Salvar Alterações
                 </button>
               </div>
             </form>
@@ -1144,7 +1280,7 @@ export default function GestaoEstoqueBar() {
                 <input
                   type="number"
                   min="1"
-                  value={formPerda.quantidade}
+                  value={formPerda.quantidade || ''}
                   onChange={(e) => setFormPerda({ ...formPerda, quantidade: e.target.value })}
                   className="w-full bg-[#0a0e17] border border-rose-500/50 rounded-lg p-2 text-white font-bold"
                   required
@@ -1154,7 +1290,7 @@ export default function GestaoEstoqueBar() {
               <div>
                 <label className="block text-slate-400 mb-1 font-semibold">Motivo da Perda:</label>
                 <select
-                  value={formPerda.motivo_perda}
+                  value={formPerda.motivo_perda || ''}
                   onChange={(e) => setFormPerda({ ...formPerda, motivo_perda: e.target.value })}
                   className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2 text-slate-200"
                 >
@@ -1171,7 +1307,7 @@ export default function GestaoEstoqueBar() {
                 <input
                   type="text"
                   placeholder="Ex: Quebrada no manuseio..."
-                  value={formPerda.observacao}
+                  value={formPerda.observacao || ''}
                   onChange={(e) => setFormPerda({ ...formPerda, observacao: e.target.value })}
                   className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg p-2 text-slate-200"
                 />

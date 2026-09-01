@@ -155,8 +155,6 @@ export default function GestaoEstoqueBar() {
             produto_id: data[0].id,
             tipo_movimentacao: 'ENTRADA',
             quantidade: qtdInicial,
-            preco_custo_momento: precoCusto,
-            preco_venda_momento: precoVenda,
             observacao: 'Estoque Inicial de Cadastro'
           }
         ]);
@@ -229,8 +227,7 @@ export default function GestaoEstoqueBar() {
           produto_id: prod.id,
           tipo_movimentacao: 'ENTRADA',
           quantidade: qtd,
-          preco_custo_momento: precoUnit,
-          preco_venda_momento: prod.preco_venda
+          observacao: `Entrada - Custo R$ ${precoUnit}`
         }
       ]);
       if (errMov) throw errMov;
@@ -277,16 +274,17 @@ export default function GestaoEstoqueBar() {
           produto_id: prod.id,
           tipo_movimentacao: 'SAIDA',
           quantidade: qtd,
-          preco_custo_momento: prod.preco_custo,
-          preco_venda_momento: precoVendaAtualizado || prod.preco_venda,
-          observacao: formSaida.observacao
+          observacao: `${formSaida.observacao} (Preço Venda: R$ ${precoVendaAtualizado || prod.preco_venda})`
         }
       ]);
       if (errMov) throw errMov;
 
       const { error: errProd } = await supabase
         .from('produtos')
-        .update({ quantidade_estoque: novoEstoque })
+        .update({ 
+          quantidade_estoque: novoEstoque,
+          preco_venda: precoVendaAtualizado || prod.preco_venda 
+        })
         .eq('id', prod.id);
 
       if (errProd) throw errProd;
@@ -318,8 +316,6 @@ export default function GestaoEstoqueBar() {
           produto_id: prod.id,
           tipo_movimentacao: 'RETORNO',
           quantidade: qtd,
-          preco_custo_momento: prod.preco_custo,
-          preco_venda_momento: prod.preco_venda,
           observacao: formRetorno.motivo
         }
       ]);
@@ -359,10 +355,7 @@ export default function GestaoEstoqueBar() {
           produto_id: prod.id,
           tipo_movimentacao: 'PERDA',
           quantidade: qtd,
-          preco_custo_momento: prod.preco_custo,
-          preco_venda_momento: prod.preco_venda,
-          motivo_perda: formPerda.motivo_perda,
-          observacao: formPerda.observacao
+          observacao: `Perda (${formPerda.motivo_perda}): ${formPerda.observacao || '-'}`
         }
       ]);
       if (errMov) throw errMov;
@@ -432,10 +425,7 @@ export default function GestaoEstoqueBar() {
     if (abaAtiva === 'entradas' && m.tipo_movimentacao !== 'ENTRADA') return false;
     if (abaAtiva === 'saidas' && m.tipo_movimentacao !== 'SAIDA') return false;
     if (abaAtiva === 'retornos' && m.tipo_movimentacao !== 'RETORNO') return false;
-    if (abaAtiva === 'perdas') {
-      if (m.tipo_movimentacao !== 'PERDA') return false;
-      if (motivosPerdaSelecionados.length > 0 && !motivosPerdaSelecionados.includes(m.motivo_perda)) return false;
-    }
+    if (abaAtiva === 'perdas' && m.tipo_movimentacao !== 'PERDA') return false;
     return true;
   });
 
@@ -694,16 +684,13 @@ export default function GestaoEstoqueBar() {
                 <th className="p-3">Produto</th>
                 <th className="p-3">Tipo Bebida</th>
                 <th className="p-3">Quantidade</th>
-                {abaAtiva === 'entradas' && <th className="p-3">Preço Custo (Un)</th>}
-                {abaAtiva === 'saidas' && <th className="p-3">Preço Venda (Un)</th>}
-                {abaAtiva === 'perdas' && <th className="p-3">Motivo da Perda</th>}
-                <th className="p-3">Observação / Detalhe</th>
+                <th className="p-3">Detalhes / Observação</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/60">
               {movimentacoesFiltradas.length === 0 ? (
                 <tr>
-                  <td colSpan="8" className="p-8 text-center text-slate-500">
+                  <td colSpan="5" className="p-8 text-center text-slate-500">
                     Nenhum registro encontrado para este filtro de datas ou produtos.
                   </td>
                 </tr>
@@ -716,17 +703,6 @@ export default function GestaoEstoqueBar() {
                     <td className="p-3 font-semibold text-white">{m.produtos?.nome || 'Produto Removido'}</td>
                     <td className="p-3 text-slate-400">{m.produtos?.tipo || '-'}</td>
                     <td className="p-3 font-bold text-slate-200">{m.quantidade} und</td>
-                    
-                    {abaAtiva === 'entradas' && (
-                      <td className="p-3">R$ {parseNumero(m.preco_custo_momento).toFixed(2)}</td>
-                    )}
-                    {abaAtiva === 'saidas' && (
-                      <td className="p-3 text-emerald-400">R$ {parseNumero(m.preco_venda_momento).toFixed(2)}</td>
-                    )}
-                    
-                    {abaAtiva === 'perdas' && (
-                      <td className="p-3 text-rose-400 font-semibold">{m.motivo_perda || 'Não informado'}</td>
-                    )}
                     <td className="p-3 text-slate-400">{m.observacao || '-'}</td>
                   </tr>
                 ))
@@ -848,7 +824,6 @@ export default function GestaoEstoqueBar() {
 
                 <div>
                   <label className="block text-slate-400 mb-1 font-semibold">Tipo do Produto:</label>
-                  {/* CORREÇÃO DO SELECT DE TIPO */}
                   <select
                     value={novoProd.tipo || ''}
                     onChange={(e) => setNovoProd({ ...novoProd, tipo: e.target.value })}
@@ -957,7 +932,6 @@ export default function GestaoEstoqueBar() {
                 </div>
                 <div>
                   <label className="block text-slate-400 mb-1">Tipo / Segmento:</label>
-                  {/* CORREÇÃO DO BUGS DA LISTA DE TIPO */}
                   <select
                     value={modalEditarProduto.tipo || ''}
                     onChange={(e) => setModalEditarProduto({ ...modalEditarProduto, tipo: e.target.value })}

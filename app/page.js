@@ -178,6 +178,46 @@ export default function GestaoEstoqueBar() {
     }
   };
 
+  // EXCLUIR / CANCELAR MOVIMENTAÇÃO (Com Reversão de Estoque)
+  const handleExcluirMovimentacao = async (mov) => {
+    if (!confirm('Deseja realmente cancelar/excluir esta movimentação? O estoque será revertido automaticamente.')) return;
+    
+    try {
+      const prod = produtos.find((p) => p.id.toString() === mov.produto_id.toString());
+      if (!prod) throw new Error('Produto associado não encontrado!');
+
+      let novoEstoque = parseNumero(prod.quantidade_estoque);
+      const qtdMov = parseNumero(mov.quantidade);
+
+      // Reverte o estoque dependendo do tipo de movimentação
+      if (mov.tipo_movimentacao === 'ENTRADA') {
+        novoEstoque -= qtdMov; // Se entrou, ao apagar deve subtrair do estoque
+      } else if (mov.tipo_movimentacao === 'SAIDA' || mov.tipo_movimentacao === 'PERDA') {
+        novoEstoque += qtdMov; // Se saiu ou foi perda, ao apagar deve devolver ao estoque
+      }
+
+      // 1. Atualiza o estoque do produto
+      const { error: errProd } = await supabase
+        .from('produtos')
+        .update({ quantidade_estoque: novoEstoque })
+        .eq('id', prod.id);
+
+      if (errProd) throw errProd;
+
+      // 2. Deleta a movimentação
+      const { error: errMov } = await supabase
+        .from('movimentacoes')
+        .delete()
+        .eq('id', mov.id);
+
+      if (errMov) throw errMov;
+
+      await carregarDados();
+      alert('Movimentação cancelada e estoque revertido com sucesso!');
+    } catch (err) {
+      alert('Erro ao cancelar movimentação: ' + err.message);
+    }
+  };
   // SALVAR EDIÇÃO DE PRODUTO
   const handleSalvarEdicaoProduto = async (e) => {
     e.preventDefault();

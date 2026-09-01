@@ -297,7 +297,7 @@ export default function GestaoEstoqueBar() {
     }
   };
 
-  // REGISTRAR RETORNO AO ESTOQUE
+// REGISTRAR RETORNO AO ESTOQUE
   const handleRegistrarRetorno = async (e) => {
     e.preventDefault();
     if (!formRetorno.produto_id) return alert('Selecione um produto!');
@@ -314,9 +314,9 @@ export default function GestaoEstoqueBar() {
       const { error: errMov } = await supabase.from('movimentacoes').insert([
         {
           produto_id: prod.id,
-          tipo_movimentacao: 'RETORNO',
+          tipo_movimentacao: 'ENTRADA',
           quantidade: qtd,
-          observacao: formRetorno.motivo
+          observacao: `Retorno ao Estoque: ${formRetorno.motivo}`
         }
       ]);
       if (errMov) throw errMov;

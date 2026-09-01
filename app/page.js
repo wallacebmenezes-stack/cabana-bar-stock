@@ -178,46 +178,6 @@ export default function GestaoEstoqueBar() {
     }
   };
 
-  // EXCLUIR / CANCELAR MOVIMENTAÇÃO (Com Reversão de Estoque)
-  const handleExcluirMovimentacao = async (mov) => {
-    if (!confirm('Deseja realmente cancelar/excluir esta movimentação? O estoque será revertido automaticamente.')) return;
-    
-    try {
-      const prod = produtos.find((p) => p.id.toString() === mov.produto_id.toString());
-      if (!prod) throw new Error('Produto associado não encontrado!');
-
-      let novoEstoque = parseNumero(prod.quantidade_estoque);
-      const qtdMov = parseNumero(mov.quantidade);
-
-      // Reverte o estoque dependendo do tipo de movimentação
-      if (mov.tipo_movimentacao === 'ENTRADA') {
-        novoEstoque -= qtdMov; // Se entrou, ao apagar deve subtrair do estoque
-      } else if (mov.tipo_movimentacao === 'SAIDA' || mov.tipo_movimentacao === 'PERDA') {
-        novoEstoque += qtdMov; // Se saiu ou foi perda, ao apagar deve devolver ao estoque
-      }
-
-      // 1. Atualiza o estoque do produto
-      const { error: errProd } = await supabase
-        .from('produtos')
-        .update({ quantidade_estoque: novoEstoque })
-        .eq('id', prod.id);
-
-      if (errProd) throw errProd;
-
-      // 2. Deleta a movimentação
-      const { error: errMov } = await supabase
-        .from('movimentacoes')
-        .delete()
-        .eq('id', mov.id);
-
-      if (errMov) throw errMov;
-
-      await carregarDados();
-      alert('Movimentação cancelada e estoque revertido com sucesso!');
-    } catch (err) {
-      alert('Erro ao cancelar movimentação: ' + err.message);
-    }
-  };
   // SALVAR EDIÇÃO DE PRODUTO
   const handleSalvarEdicaoProduto = async (e) => {
     e.preventDefault();
@@ -337,7 +297,7 @@ export default function GestaoEstoqueBar() {
     }
   };
 
-// REGISTRAR RETORNO AO ESTOQUE
+  // REGISTRAR RETORNO AO ESTOQUE (Utiliza ENTRADA para compatibilidade com o banco)
   const handleRegistrarRetorno = async (e) => {
     e.preventDefault();
     if (!formRetorno.produto_id) return alert('Selecione um produto!');
@@ -415,6 +375,45 @@ export default function GestaoEstoqueBar() {
     }
   };
 
+  // EXCLUIR / CANCELAR MOVIMENTAÇÃO (Com reversão automática no estoque)
+  const handleExcluirMovimentacao = async (mov) => {
+    if (!confirm('Deseja realmente cancelar/excluir esta movimentação? O estoque do produto será revertido.')) return;
+
+    try {
+      const prod = produtos.find((p) => p.id.toString() === mov.produto_id.toString());
+      if (!prod) throw new Error('Produto associado não encontrado ou removido!');
+
+      let novoEstoque = parseNumero(prod.quantidade_estoque);
+      const qtdMov = parseNumero(mov.quantidade);
+
+      // Reverte o estoque dependendo do tipo
+      if (mov.tipo_movimentacao === 'ENTRADA') {
+        novoEstoque -= qtdMov; // Se foi entrada/retorno, ao apagar subtrai do estoque
+      } else if (mov.tipo_movimentacao === 'SAIDA' || mov.tipo_movimentacao === 'PERDA') {
+        novoEstoque += qtdMov; // Se foi saída ou perda, ao apagar devolve ao estoque
+      }
+
+      // Atualiza o estoque do produto
+      const { error: errProd } = await supabase
+        .from('produtos')
+        .update({ quantidade_estoque: Math.max(0, novoEstoque) })
+        .eq('id', prod.id);
+      if (errProd) throw errProd;
+
+      // Deleta a movimentação
+      const { error: errMov } = await supabase
+        .from('movimentacoes')
+        .delete()
+        .eq('id', mov.id);
+      if (errMov) throw errMov;
+
+      await carregarDados();
+      alert('Movimentação cancelada e estoque revertido com sucesso!');
+    } catch (err) {
+      alert('Erro ao cancelar movimentação: ' + err.message);
+    }
+  };
+
   // CADASTRAR TIPO DE BEBIDA
   const handleSalvarNovoTipo = async (e) => {
     e.preventDefault();
@@ -464,7 +463,7 @@ export default function GestaoEstoqueBar() {
 
     if (abaAtiva === 'entradas' && m.tipo_movimentacao !== 'ENTRADA') return false;
     if (abaAtiva === 'saidas' && m.tipo_movimentacao !== 'SAIDA') return false;
-    if (abaAtiva === 'retornos' && m.tipo_movimentacao !== 'RETORNO') return false;
+    if (abaAtiva === 'retornos' && !(m.tipo_movimentacao === 'ENTRADA' && m.observacao?.includes('Retorno'))) return false;
     if (abaAtiva === 'perdas' && m.tipo_movimentacao !== 'PERDA') return false;
     return true;
   });
@@ -472,9 +471,15 @@ export default function GestaoEstoqueBar() {
   const totalUnidades = produtos.reduce((acc, p) => acc + parseNumero(p.quantidade_estoque), 0);
   const valorEstoqueCusto = produtos.reduce((acc, p) => acc + parseNumero(p.quantidade_estoque) * parseNumero(p.preco_custo), 0);
   const alertasEstoqueBaixo = produtos.filter((p) => parseNumero(p.quantidade_estoque) <= parseNumero(p.estoque_critico)).length;
-  const totalPerdasQtd = movimentacoes
+  
+  // Total de perdas financeiro em R$ (baseado no preço de custo)
+  const totalPerdasReais = movimentacoes
     .filter((m) => m.tipo_movimentacao === 'PERDA')
-    .reduce((acc, m) => acc + parseNumero(m.quantidade), 0);
+    .reduce((acc, m) => {
+      const prod = produtos.find((p) => p.id.toString() === m.produto_id.toString());
+      const precoCusto = prod ? parseNumero(prod.preco_custo) : 0;
+      return acc + (parseNumero(m.quantidade) * precoCusto);
+    }, 0);
 
   const totalFiltrosAtivos =
     produtosSelecionados.length + tiposSelecionados.length + motivosPerdaSelecionados.length + (dataInicio ? 1 : 0) + (dataFim ? 1 : 0);
@@ -563,9 +568,9 @@ export default function GestaoEstoqueBar() {
           </p>
         </div>
         <div className="bg-[#111726] border border-slate-800/80 p-4 rounded-xl">
-          <p className="text-xs text-slate-400 font-medium">TOTAL DE PERDAS REGISTRADAS</p>
+          <p className="text-xs text-slate-400 font-medium">TOTAL DE PERDAS (CUSTO)</p>
           <p className="text-2xl font-bold text-rose-400 mt-1">
-            {totalPerdasQtd} <span className="text-xs text-slate-500 font-normal">und</span>
+            {totalPerdasReais.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}
           </p>
         </div>
       </div>
@@ -725,12 +730,13 @@ export default function GestaoEstoqueBar() {
                 <th className="p-3">Tipo Bebida</th>
                 <th className="p-3">Quantidade</th>
                 <th className="p-3">Detalhes / Observação</th>
+                <th className="p-3 text-right">Ações</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/60">
               {movimentacoesFiltradas.length === 0 ? (
                 <tr>
-                  <td colSpan="5" className="p-8 text-center text-slate-500">
+                  <td colSpan="6" className="p-8 text-center text-slate-500">
                     Nenhum registro encontrado para este filtro de datas ou produtos.
                   </td>
                 </tr>
@@ -744,6 +750,15 @@ export default function GestaoEstoqueBar() {
                     <td className="p-3 text-slate-400">{m.produtos?.tipo || '-'}</td>
                     <td className="p-3 font-bold text-slate-200">{m.quantidade} und</td>
                     <td className="p-3 text-slate-400">{m.observacao || '-'}</td>
+                    <td className="p-3 text-right">
+                      <button
+                        onClick={() => handleExcluirMovimentacao(m)}
+                        className="bg-rose-950/60 hover:bg-rose-900/80 text-rose-300 border border-rose-800/50 px-2.5 py-1 rounded-md text-[11px] font-medium transition"
+                        title="Cancelar / Excluir movimentação e reverter estoque"
+                      >
+                        🗑 Cancelar
+                      </button>
+                    </td>
                   </tr>
                 ))
               )}

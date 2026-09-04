@@ -26,8 +26,14 @@ export default function GestaoEstoqueBar() {
   const [loading, setLoading] = useState(true);
   const [mensagemErro, setMensagemErro] = useState('');
 
-  const [abaAtiva, setAbaAtiva] = useState('estoque');
+  const [abaAtiva, setAbaAtiva] = useState('bar'); // Padrão iniciando no PDV / Bar
 
+  // Estado do Carrinho / Comanda do Bar
+  const [carrinhoBar, setCarrinhoBar] = useState([]);
+  const [filtroTipoBar, setFiltroTipoBar] = useState('TODOS');
+  const [buscaBar, setBuscaBar] = useState('');
+
+  // Filtros Globais
   const [buscaNome, setBuscaNome] = useState('');
   const [produtosSelecionados, setProdutosSelecionados] = useState([]);
   const [tiposSelecionados, setTiposSelecionados] = useState([]);
@@ -35,6 +41,7 @@ export default function GestaoEstoqueBar() {
   const [dataInicio, setDataInicio] = useState('');
   const [dataFim, setDataFim] = useState('');
 
+  // Modais
   const [modalFiltros, setModalFiltros] = useState(false);
   const [modalNovoProduto, setModalNovoProduto] = useState(false);
   const [modalNovoTipo, setModalNovoTipo] = useState(false);
@@ -119,6 +126,99 @@ export default function GestaoEstoqueBar() {
   useEffect(() => {
     carregarDados();
   }, []);
+
+  // LÓGICA DO BAR / COMANDA (CARRINHO)
+  const adicionarAoCarrinho = (prod) => {
+    const estoqueAtual = parseNumero(prod.quantidade_estoque);
+    const itemExistente = carrinhoBar.find((i) => i.produto.id === prod.id);
+    const qtdNoCarrinho = itemExistente ? itemExistente.quantidade : 0;
+
+    if (qtdNoCarrinho + 1 > estoqueAtual) {
+      return alert(`Estoque insuficiente! Apenas ${estoqueAtual} und em estoque.`);
+    }
+
+    if (itemExistente) {
+      setCarrinhoBar(
+        carrinhoBar.map((i) =>
+          i.produto.id === prod.id ? { ...i, quantidade: i.quantidade + 1 } : i
+        )
+      );
+    } else {
+      setCarrinhoBar([...carrinhoBar, { produto: prod, quantidade: 1 }]);
+    }
+  };
+
+  const alterarQtdCarrinho = (prodId, delta) => {
+    const item = carrinhoBar.find((i) => i.produto.id === prodId);
+    if (!item) return;
+
+    const novaQtd = item.quantidade + delta;
+    const estoqueAtual = parseNumero(item.produto.quantidade_estoque);
+
+    if (novaQtd > estoqueAtual) {
+      return alert(`Estoque insuficiente! Apenas ${estoqueAtual} und disponíveis.`);
+    }
+
+    if (novaQtd <= 0) {
+      setCarrinhoBar(carrinhoBar.filter((i) => i.produto.id !== prodId));
+    } else {
+      setCarrinhoBar(
+        carrinhoBar.map((i) =>
+          i.produto.id === prodId ? { ...i, quantidade: novaQtd } : i
+        )
+      );
+    }
+  };
+
+  const finalizarVendaBar = async () => {
+    if (carrinhoBar.length === 0) return alert('A comanda do cliente está vazia!');
+
+    // Re-validar estoques
+    for (const item of carrinhoBar) {
+      const prodNoBanco = produtos.find((p) => p.id === item.produto.id);
+      if (!prodNoBanco || parseNumero(prodNoBanco.quantidade_estoque) < item.quantidade) {
+        return alert(`Estoque insuficiente para o produto: ${item.produto.nome}`);
+      }
+    }
+
+    try {
+      setLoading(true);
+
+      for (const item of carrinhoBar) {
+        const prod = item.produto;
+        const qtd = item.quantidade;
+        const novoEstoque = parseNumero(prod.quantidade_estoque) - qtd;
+        const precoVenda = parseNumero(prod.preco_venda);
+
+        // 1. Registra Saída na tabela de movimentações
+        const { error: errMov } = await supabase.from('movimentacoes').insert([
+          {
+            produto_id: prod.id,
+            tipo_movimentacao: 'SAIDA',
+            quantidade: qtd,
+            observacao: `Venda Bar / Cliente (Preço Venda: R$ ${precoVenda})`
+          }
+        ]);
+        if (errMov) throw errMov;
+
+        // 2. Deduz do Estoque Principal
+        const { error: errProd } = await supabase
+          .from('produtos')
+          .update({ quantidade_estoque: novoEstoque })
+          .eq('id', prod.id);
+
+        if (errProd) throw errProd;
+      }
+
+      setCarrinhoBar([]);
+      await carregarDados();
+      alert('Saída para o cliente registrada com sucesso!');
+    } catch (err) {
+      alert('Erro ao registrar saída do bar: ' + err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   // CADASTRAR NOVO PRODUTO
   const handleSalvarNovoProduto = async (e) => {
@@ -297,7 +397,7 @@ export default function GestaoEstoqueBar() {
     }
   };
 
-  // REGISTRAR RETORNO AO ESTOQUE (Utiliza ENTRADA para compatibilidade com o banco)
+  // REGISTRAR RETORNO AO ESTOQUE
   const handleRegistrarRetorno = async (e) => {
     e.preventDefault();
     if (!formRetorno.produto_id) return alert('Selecione um produto!');
@@ -375,7 +475,7 @@ export default function GestaoEstoqueBar() {
     }
   };
 
-  // EXCLUIR / CANCELAR MOVIMENTAÇÃO (Com reversão automática no estoque)
+  // EXCLUIR / CANCELAR MOVIMENTAÇÃO (Revertendo estoque)
   const handleExcluirMovimentacao = async (mov) => {
     if (!confirm('Deseja realmente cancelar/excluir esta movimentação? O estoque do produto será revertido.')) return;
 
@@ -386,21 +486,18 @@ export default function GestaoEstoqueBar() {
       let novoEstoque = parseNumero(prod.quantidade_estoque);
       const qtdMov = parseNumero(mov.quantidade);
 
-      // Reverte o estoque dependendo do tipo
       if (mov.tipo_movimentacao === 'ENTRADA') {
-        novoEstoque -= qtdMov; // Se foi entrada/retorno, ao apagar subtrai do estoque
+        novoEstoque -= qtdMov;
       } else if (mov.tipo_movimentacao === 'SAIDA' || mov.tipo_movimentacao === 'PERDA') {
-        novoEstoque += qtdMov; // Se foi saída ou perda, ao apagar devolve ao estoque
+        novoEstoque += qtdMov;
       }
 
-      // Atualiza o estoque do produto
       const { error: errProd } = await supabase
         .from('produtos')
         .update({ quantidade_estoque: Math.max(0, novoEstoque) })
         .eq('id', prod.id);
       if (errProd) throw errProd;
 
-      // Deleta a movimentação
       const { error: errMov } = await supabase
         .from('movimentacoes')
         .delete()
@@ -453,6 +550,12 @@ export default function GestaoEstoqueBar() {
     return atendeNome && atendeProdutos && atendeTipo;
   });
 
+  const produtosBarFiltrados = produtos.filter((p) => {
+    const atendeTipo = filtroTipoBar === 'TODOS' || p.tipo === filtroTipoBar;
+    const atendeBusca = p.nome.toLowerCase().includes(buscaBar.toLowerCase());
+    return atendeTipo && atendeBusca;
+  });
+
   const movimentacoesFiltradas = movimentacoes.filter((m) => {
     const dataMov = new Date(m.created_at);
     if (dataInicio && dataMov < new Date(dataInicio + 'T00:00:00')) return false;
@@ -472,7 +575,6 @@ export default function GestaoEstoqueBar() {
   const valorEstoqueCusto = produtos.reduce((acc, p) => acc + parseNumero(p.quantidade_estoque) * parseNumero(p.preco_custo), 0);
   const alertasEstoqueBaixo = produtos.filter((p) => parseNumero(p.quantidade_estoque) <= parseNumero(p.estoque_critico)).length;
   
-  // Total de perdas financeiro em R$ (baseado no preço de custo)
   const totalPerdasReais = movimentacoes
     .filter((m) => m.tipo_movimentacao === 'PERDA')
     .reduce((acc, m) => {
@@ -480,6 +582,10 @@ export default function GestaoEstoqueBar() {
       const precoCusto = prod ? parseNumero(prod.preco_custo) : 0;
       return acc + (parseNumero(m.quantidade) * precoCusto);
     }, 0);
+
+  const totalCarrinhoBar = carrinhoBar.reduce((acc, item) => {
+    return acc + (item.quantidade * parseNumero(item.produto.preco_venda));
+  }, 0);
 
   const totalFiltrosAtivos =
     produtosSelecionados.length + tiposSelecionados.length + motivosPerdaSelecionados.length + (dataInicio ? 1 : 0) + (dataFim ? 1 : 0);
@@ -502,9 +608,9 @@ export default function GestaoEstoqueBar() {
               setFormEntrada({ produto_id: p1.id, preco_unidade: p1.preco_custo || 0, quantidade: 1 });
               setModalEntrada(true);
             }}
-            className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs px-4 py-2 rounded-lg font-semibold transition"
+            className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs px-3.5 py-2 rounded-lg font-semibold transition"
           >
-            ↙ Registrar Entrada
+            ↙ Entrada
           </button>
 
           <button
@@ -514,9 +620,9 @@ export default function GestaoEstoqueBar() {
               setFormSaida({ produto_id: p1.id, preco_venda: p1.preco_venda || 0, quantidade: 1, observacao: 'Venda / Consumo' });
               setModalSaida(true);
             }}
-            className="bg-sky-600 hover:bg-sky-500 text-white text-xs px-4 py-2 rounded-lg font-semibold transition"
+            className="bg-sky-600 hover:bg-sky-500 text-white text-xs px-3.5 py-2 rounded-lg font-semibold transition"
           >
-            ↗ Registrar Saída
+            ↗ Saída
           </button>
 
           <button
@@ -525,9 +631,9 @@ export default function GestaoEstoqueBar() {
               setFormRetorno({ produto_id: produtos[0].id, quantidade: 1, motivo: 'Sobra do Bar' });
               setModalRetorno(true);
             }}
-            className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs px-4 py-2 rounded-lg font-semibold transition"
+            className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs px-3.5 py-2 rounded-lg font-semibold transition"
           >
-            ↩ Retorno ao Estoque
+            ↩ Retorno
           </button>
 
           <button
@@ -536,9 +642,9 @@ export default function GestaoEstoqueBar() {
               setFormPerda({ produto_id: produtos[0].id, quantidade: 1, motivo_perda: 'Validade', observacao: '' });
               setModalPerda(true);
             }}
-            className="bg-rose-700 hover:bg-rose-600 text-white text-xs px-4 py-2 rounded-lg font-semibold transition"
+            className="bg-rose-700 hover:bg-rose-600 text-white text-xs px-3.5 py-2 rounded-lg font-semibold transition"
           >
-            ⚠ Registrar Perda
+            ⚠ Perda
           </button>
         </div>
       </div>
@@ -549,7 +655,7 @@ export default function GestaoEstoqueBar() {
         </div>
       )}
 
-      {/* CARDS DE RESUMO */}
+      {/* CARDS DE RESUMO DA DASHBOARD */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
         <div className="bg-[#111726] border border-slate-800/80 p-4 rounded-xl">
           <p className="text-xs text-slate-400 font-medium">TOTAL DE UNIDADES</p>
@@ -578,6 +684,7 @@ export default function GestaoEstoqueBar() {
       {/* ABAS DE NAVEGAÇÃO */}
       <div className="flex border-b border-slate-800 mb-6 space-x-2 overflow-x-auto pb-1">
         {[
+          { id: 'bar', label: '🍸 PDV / Atendimento Bar' },
           { id: 'estoque', label: 'Estoque Principal' },
           { id: 'entradas', label: 'Histórico de Entradas' },
           { id: 'saidas', label: 'Histórico de Saídas' },
@@ -587,7 +694,7 @@ export default function GestaoEstoqueBar() {
           <button
             key={aba.id}
             onClick={() => setAbaAtiva(aba.id)}
-            className={`px-4 py-2 text-xs font-semibold rounded-t-lg transition whitespace-nowrap ${
+            className={`px-4 py-2.5 text-xs font-semibold rounded-t-lg transition whitespace-nowrap ${
               abaAtiva === aba.id
                 ? 'bg-amber-500/10 text-amber-400 border-b-2 border-amber-500'
                 : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/40'
@@ -598,173 +705,365 @@ export default function GestaoEstoqueBar() {
         ))}
       </div>
 
-      {/* BARRA DE PESQUISA, FILTROS E NOVOS CADASTROS */}
-      <div className="bg-[#111726] border border-slate-800/80 p-3 rounded-xl mb-6 flex flex-col md:flex-row items-center justify-between gap-3 text-xs">
-        <div className="w-full md:w-80 flex gap-2">
-          <input
-            type="text"
-            placeholder="🔍 Buscar produto por nome..."
-            value={buscaNome}
-            onChange={(e) => setBuscaNome(e.target.value)}
-            className="w-full bg-[#0a0e17] border border-slate-700/80 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-amber-500"
-          />
-        </div>
+      {/* 1. ABA DE ATENDIMENTO DO BAR (PDV DE SAÍDA RÁPIDA) */}
+      {abaAtiva === 'bar' && (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* PAINEL DE SELEÇÃO DE PRODUTOS */}
+          <div className="lg:col-span-2 space-y-4">
+            
+            {/* BUSCA E FILTROS RÁPIDOS POR TIPO */}
+            <div className="bg-[#111726] border border-slate-800 p-4 rounded-xl space-y-3">
+              <input
+                type="text"
+                placeholder="🔍 Buscar bebida no bar..."
+                value={buscaBar}
+                onChange={(e) => setBuscaBar(e.target.value)}
+                className="w-full bg-[#0a0e17] border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-amber-500"
+              />
 
-        <div className="flex flex-wrap items-center gap-2 w-full md:w-auto justify-end">
-          <button
-            onClick={() => setModalNovoTipo(true)}
-            className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs px-3 py-2 rounded-lg font-medium transition"
-          >
-            + Tipo de Bebida
-          </button>
+              <div className="flex gap-2 overflow-x-auto pb-1">
+                <button
+                  onClick={() => setFiltroTipoBar('TODOS')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition whitespace-nowrap ${
+                    filtroTipoBar === 'TODOS'
+                      ? 'bg-amber-500 text-slate-950 font-bold'
+                      : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                  }`}
+                >
+                  Todos
+                </button>
+                {tiposBebida.map((t) => (
+                  <button
+                    key={t.id}
+                    onClick={() => setFiltroTipoBar(t.nome)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition whitespace-nowrap ${
+                      filtroTipoBar === t.nome
+                        ? 'bg-amber-500 text-slate-950 font-bold'
+                        : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                    }`}
+                  >
+                    {t.nome}
+                  </button>
+                ))}
+              </div>
+            </div>
 
-          <button
-            onClick={() => {
-              setNovoProd({
-                nome: '',
-                distribuidora: 'AMBEV',
-                tipo: tiposBebida[0]?.nome || '',
-                preco_custo: '',
-                preco_venda: '',
-                quantidade_entrada: '',
-                estoque_critico: 5
-              });
-              setModalNovoProduto(true);
-            }}
-            className="bg-amber-600 hover:bg-amber-500 text-white text-xs px-4 py-2 rounded-lg font-semibold transition"
-          >
-            + Novo Produto
-          </button>
-
-          <div className="w-px h-6 bg-slate-700 mx-1 hidden md:block"></div>
-
-          {totalFiltrosAtivos > 0 && (
-            <button
-              onClick={limparFiltros}
-              className="text-slate-400 hover:text-rose-400 px-3 py-2 text-xs transition"
-            >
-              Limpar Filtros
-            </button>
-          )}
-
-          <button
-            onClick={() => setModalFiltros(true)}
-            className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 px-4 py-2 rounded-lg font-medium transition flex items-center gap-2"
-          >
-            <span>⚙ Filtros de Seleção</span>
-            {totalFiltrosAtivos > 0 && (
-              <span className="bg-amber-500 text-slate-950 font-bold text-[10px] px-1.5 py-0.5 rounded-full">
-                {totalFiltrosAtivos}
-              </span>
-            )}
-          </button>
-        </div>
-      </div>
-
-      {/* TABELAS DE DADOS */}
-      {abaAtiva === 'estoque' && (
-        <div className="bg-[#111726] border border-slate-800/80 rounded-xl overflow-x-auto">
-          <table className="w-full text-left text-xs text-slate-300">
-            <thead className="bg-[#0a0e17] text-slate-400 border-b border-slate-800 uppercase tracking-wider">
-              <tr>
-                <th className="p-3">Produto</th>
-                <th className="p-3">Distribuidora</th>
-                <th className="p-3">Tipo</th>
-                <th className="p-3">Preço Custo</th>
-                <th className="p-3">Preço Venda</th>
-                <th className="p-3">Qtd em Estoque</th>
-                <th className="p-3">Status</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800/60">
-              {produtosFiltrados.length === 0 ? (
-                <tr>
-                  <td colSpan="7" className="p-8 text-center text-slate-500">
-                    Nenhum produto cadastrado ou encontrado nos filtros.
-                  </td>
-                </tr>
+            {/* GRID DE CARDS DE BEBIDAS */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+              {produtosBarFiltrados.length === 0 ? (
+                <div className="col-span-full bg-[#111726] border border-slate-800 p-8 rounded-xl text-center text-slate-500 text-xs">
+                  Nenhuma bebida encontrada para este filtro.
+                </div>
               ) : (
-                produtosFiltrados.map((p) => {
-                  const isCritico = parseNumero(p.quantidade_estoque) <= parseNumero(p.estoque_critico);
+                produtosBarFiltrados.map((p) => {
+                  const qtdEstoque = parseNumero(p.quantidade_estoque);
+                  const isEsgotado = qtdEstoque <= 0;
+                  const isCritico = qtdEstoque <= parseNumero(p.estoque_critico);
+
                   return (
-                    <tr
+                    <div
                       key={p.id}
-                      onClick={() => setModalEditarProduto({ ...p })}
-                      className="hover:bg-slate-800/50 cursor-pointer transition"
-                      title="Clique para editar este produto"
+                      className={`bg-[#111726] border rounded-xl p-3.5 flex flex-col justify-between transition ${
+                        isEsgotado
+                          ? 'border-slate-800/40 opacity-50'
+                          : 'border-slate-800 hover:border-amber-500/50'
+                      }`}
                     >
-                      <td className="p-3 font-semibold text-white">{p.nome}</td>
-                      <td className="p-3 text-amber-500 font-medium">{p.distribuidora}</td>
-                      <td className="p-3 text-slate-400">{p.tipo || '-'}</td>
-                      <td className="p-3">R$ {parseNumero(p.preco_custo).toFixed(2)}</td>
-                      <td className="p-3">R$ {parseNumero(p.preco_venda).toFixed(2)}</td>
-                      <td className="p-3 font-bold text-white">{p.quantidade_estoque} und</td>
-                      <td className="p-3">
-                        {isCritico ? (
-                          <span className="px-2 py-1 text-[10px] font-bold rounded border border-amber-500/50 bg-amber-500/10 text-amber-400">
-                            CRÍTICO (&le; {p.estoque_critico})
+                      <div>
+                        <div className="flex justify-between items-start gap-1">
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-amber-500">{p.tipo}</span>
+                          <span
+                            className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${
+                              isEsgotado
+                                ? 'bg-rose-950 text-rose-400 border border-rose-800'
+                                : isCritico
+                                ? 'bg-amber-950 text-amber-400 border border-amber-800'
+                                : 'bg-emerald-950 text-emerald-400 border border-emerald-800'
+                            }`}
+                          >
+                            {qtdEstoque} und
                           </span>
-                        ) : (
-                          <span className="px-2 py-1 text-[10px] font-bold rounded border border-emerald-500/50 bg-emerald-500/10 text-emerald-400">
-                            OK
-                          </span>
-                        )}
-                      </td>
-                    </tr>
+                        </div>
+                        <h4 className="text-sm font-bold text-white mt-1 leading-snug">{p.nome}</h4>
+                        <p className="text-xs font-semibold text-emerald-400 mt-2">
+                          R$ {parseNumero(p.preco_venda).toFixed(2)}
+                        </p>
+                      </div>
+
+                      <button
+                        onClick={() => adicionarAoCarrinho(p)}
+                        disabled={isEsgotado}
+                        className={`mt-4 w-full py-2 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 ${
+                          isEsgotado
+                            ? 'bg-slate-800 text-slate-500 cursor-not-allowed'
+                            : 'bg-amber-500 hover:bg-amber-400 text-slate-950'
+                        }`}
+                      >
+                        <span>+ Adicionar ao Cliente</span>
+                      </button>
+                    </div>
                   );
                 })
               )}
-            </tbody>
-          </table>
-          <p className="text-[11px] text-slate-500 p-3 italic">💡 Clique em qualquer linha para editar o produto ou atualizar a quantidade.</p>
+            </div>
+          </div>
+
+          {/* PAINEL DA COMANDA / CARRINHO DO CLIENTE */}
+          <div className="bg-[#111726] border border-slate-800 p-5 rounded-xl flex flex-col justify-between h-fit sticky top-6">
+            <div>
+              <div className="flex justify-between items-center border-b border-slate-800 pb-3 mb-4">
+                <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                  <span>🍸 Comanda / Saída Atual</span>
+                </h3>
+                {carrinhoBar.length > 0 && (
+                  <button
+                    onClick={() => setCarrinhoBar([])}
+                    className="text-[11px] text-rose-400 hover:underline"
+                  >
+                    Limpar
+                  </button>
+                )}
+              </div>
+
+              {carrinhoBar.length === 0 ? (
+                <div className="py-12 text-center text-slate-500 text-xs">
+                  <p className="text-2xl mb-2">🍹</p>
+                  Clique nos produtos ao lado para registrar a saída para o cliente.
+                </div>
+              ) : (
+                <div className="space-y-3 max-h-[380px] overflow-y-auto pr-1">
+                  {carrinhoBar.map((item) => (
+                    <div
+                      key={item.produto.id}
+                      className="bg-[#0a0e17] border border-slate-800 p-3 rounded-lg flex items-center justify-between text-xs"
+                    >
+                      <div className="max-w-[140px]">
+                        <p className="font-semibold text-white truncate">{item.produto.nome}</p>
+                        <p className="text-slate-400 text-[11px]">
+                          R$ {parseNumero(item.produto.preco_venda).toFixed(2)} un
+                        </p>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <div className="flex items-center border border-slate-700 rounded-lg bg-[#111726]">
+                          <button
+                            onClick={() => alterarQtdCarrinho(item.produto.id, -1)}
+                            className="px-2 py-0.5 text-slate-300 hover:text-white font-bold"
+                          >
+                            -
+                          </button>
+                          <span className="px-2 font-bold text-amber-400 text-xs">{item.quantidade}</span>
+                          <button
+                            onClick={() => alterarQtdCarrinho(item.produto.id, 1)}
+                            className="px-2 py-0.5 text-slate-300 hover:text-white font-bold"
+                          >
+                            +
+                          </button>
+                        </div>
+                        <span className="font-bold text-white min-w-[55px] text-right">
+                          R$ {(item.quantidade * parseNumero(item.produto.preco_venda)).toFixed(2)}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {carrinhoBar.length > 0 && (
+              <div className="mt-6 pt-4 border-t border-slate-800 space-y-4">
+                <div className="flex justify-between items-center text-sm font-bold text-white">
+                  <span>TOTAL SAÍDA:</span>
+                  <span className="text-emerald-400 text-lg">
+                    R$ {totalCarrinhoBar.toFixed(2)}
+                  </span>
+                </div>
+
+                <button
+                  onClick={finalizarVendaBar}
+                  className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-3 rounded-xl text-xs transition shadow-lg shadow-emerald-950/50"
+                >
+                  🚀 Confirmar Saída para Cliente
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       )}
 
-      {abaAtiva !== 'estoque' && (
-        <div className="bg-[#111726] border border-slate-800/80 rounded-xl overflow-x-auto">
-          <table className="w-full text-left text-xs text-slate-300">
-            <thead className="bg-[#0a0e17] text-slate-400 border-b border-slate-800 uppercase tracking-wider">
-              <tr>
-                <th className="p-3">Data / Hora</th>
-                <th className="p-3">Produto</th>
-                <th className="p-3">Tipo Bebida</th>
-                <th className="p-3">Quantidade</th>
-                <th className="p-3">Detalhes / Observação</th>
-                <th className="p-3 text-right">Ações</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800/60">
-              {movimentacoesFiltradas.length === 0 ? (
-                <tr>
-                  <td colSpan="6" className="p-8 text-center text-slate-500">
-                    Nenhum registro encontrado para este filtro de datas ou produtos.
-                  </td>
-                </tr>
-              ) : (
-                movimentacoesFiltradas.map((m) => (
-                  <tr key={m.id} className="hover:bg-slate-800/30 transition">
-                    <td className="p-3 text-slate-400">
-                      {new Date(m.created_at).toLocaleString('pt-BR')}
-                    </td>
-                    <td className="p-3 font-semibold text-white">{m.produtos?.nome || 'Produto Removido'}</td>
-                    <td className="p-3 text-slate-400">{m.produtos?.tipo || '-'}</td>
-                    <td className="p-3 font-bold text-slate-200">{m.quantidade} und</td>
-                    <td className="p-3 text-slate-400">{m.observacao || '-'}</td>
-                    <td className="p-3 text-right">
-                      <button
-                        onClick={() => handleExcluirMovimentacao(m)}
-                        className="bg-rose-950/60 hover:bg-rose-900/80 text-rose-300 border border-rose-800/50 px-2.5 py-1 rounded-md text-[11px] font-medium transition"
-                        title="Cancelar / Excluir movimentação e reverter estoque"
-                      >
-                        🗑 Cancelar
-                      </button>
-                    </td>
-                  </tr>
-                ))
+      {/* 2. DEMAIS ABAS (ESTOQUE PRINCIPAL E HISTÓRICOS) */}
+      {abaAtiva !== 'bar' && (
+        <>
+          {/* BARRA DE PESQUISA, FILTROS E NOVOS CADASTROS */}
+          <div className="bg-[#111726] border border-slate-800/80 p-3 rounded-xl mb-6 flex flex-col md:flex-row items-center justify-between gap-3 text-xs">
+            <div className="w-full md:w-80 flex gap-2">
+              <input
+                type="text"
+                placeholder="🔍 Buscar produto por nome..."
+                value={buscaNome}
+                onChange={(e) => setBuscaNome(e.target.value)}
+                className="w-full bg-[#0a0e17] border border-slate-700/80 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-amber-500"
+              />
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 w-full md:w-auto justify-end">
+              <button
+                onClick={() => setModalNovoTipo(true)}
+                className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs px-3 py-2 rounded-lg font-medium transition"
+              >
+                + Tipo de Bebida
+              </button>
+
+              <button
+                onClick={() => {
+                  setNovoProd({
+                    nome: '',
+                    distribuidora: 'AMBEV',
+                    tipo: tiposBebida[0]?.nome || '',
+                    preco_custo: '',
+                    preco_venda: '',
+                    quantidade_entrada: '',
+                    estoque_critico: 5
+                  });
+                  setModalNovoProduto(true);
+                }}
+                className="bg-amber-600 hover:bg-amber-500 text-white text-xs px-4 py-2 rounded-lg font-semibold transition"
+              >
+                + Novo Produto
+              </button>
+
+              <div className="w-px h-6 bg-slate-700 mx-1 hidden md:block"></div>
+
+              {totalFiltrosAtivos > 0 && (
+                <button
+                  onClick={limparFiltros}
+                  className="text-slate-400 hover:text-rose-400 px-3 py-2 text-xs transition"
+                >
+                  Limpar Filtros
+                </button>
               )}
-            </tbody>
-          </table>
-        </div>
+
+              <button
+                onClick={() => setModalFiltros(true)}
+                className="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 px-4 py-2 rounded-lg font-medium transition flex items-center gap-2"
+              >
+                <span>⚙ Filtros de Seleção</span>
+                {totalFiltrosAtivos > 0 && (
+                  <span className="bg-amber-500 text-slate-950 font-bold text-[10px] px-1.5 py-0.5 rounded-full">
+                    {totalFiltrosAtivos}
+                  </span>
+                )}
+              </button>
+            </div>
+          </div>
+
+          {/* TABELA DE ESTOQUE PRINCIPAL */}
+          {abaAtiva === 'estoque' && (
+            <div className="bg-[#111726] border border-slate-800/80 rounded-xl overflow-x-auto">
+              <table className="w-full text-left text-xs text-slate-300">
+                <thead className="bg-[#0a0e17] text-slate-400 border-b border-slate-800 uppercase tracking-wider">
+                  <tr>
+                    <th className="p-3">Produto</th>
+                    <th className="p-3">Distribuidora</th>
+                    <th className="p-3">Tipo</th>
+                    <th className="p-3">Preço Custo</th>
+                    <th className="p-3">Preço Venda</th>
+                    <th className="p-3">Qtd em Estoque</th>
+                    <th className="p-3">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/60">
+                  {produtosFiltrados.length === 0 ? (
+                    <tr>
+                      <td colSpan="7" className="p-8 text-center text-slate-500">
+                        Nenhum produto cadastrado ou encontrado nos filtros.
+                      </td>
+                    </tr>
+                  ) : (
+                    produtosFiltrados.map((p) => {
+                      const isCritico = parseNumero(p.quantidade_estoque) <= parseNumero(p.estoque_critico);
+                      return (
+                        <tr
+                          key={p.id}
+                          onClick={() => setModalEditarProduto({ ...p })}
+                          className="hover:bg-slate-800/50 cursor-pointer transition"
+                          title="Clique para editar este produto"
+                        >
+                          <td className="p-3 font-semibold text-white">{p.nome}</td>
+                          <td className="p-3 text-amber-500 font-medium">{p.distribuidora}</td>
+                          <td className="p-3 text-slate-400">{p.tipo || '-'}</td>
+                          <td className="p-3">R$ {parseNumero(p.preco_custo).toFixed(2)}</td>
+                          <td className="p-3">R$ {parseNumero(p.preco_venda).toFixed(2)}</td>
+                          <td className="p-3 font-bold text-white">{p.quantidade_estoque} und</td>
+                          <td className="p-3">
+                            {isCritico ? (
+                              <span className="px-2 py-1 text-[10px] font-bold rounded border border-amber-500/50 bg-amber-500/10 text-amber-400">
+                                CRÍTICO (&le; {p.estoque_critico})
+                              </span>
+                            ) : (
+                              <span className="px-2 py-1 text-[10px] font-bold rounded border border-emerald-500/50 bg-emerald-500/10 text-emerald-400">
+                                OK
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+              <p className="text-[11px] text-slate-500 p-3 italic">💡 Clique em qualquer linha para editar o produto ou atualizar a quantidade.</p>
+            </div>
+          )}
+
+          {/* TABELAS DE HISTÓRICOS (ENTRADAS, SAÍDAS, RETORNOS, PERDAS) */}
+          {abaAtiva !== 'estoque' && (
+            <div className="bg-[#111726] border border-slate-800/80 rounded-xl overflow-x-auto">
+              <table className="w-full text-left text-xs text-slate-300">
+                <thead className="bg-[#0a0e17] text-slate-400 border-b border-slate-800 uppercase tracking-wider">
+                  <tr>
+                    <th className="p-3">Data / Hora</th>
+                    <th className="p-3">Produto</th>
+                    <th className="p-3">Tipo Bebida</th>
+                    <th className="p-3">Quantidade</th>
+                    <th className="p-3">Detalhes / Observação</th>
+                    <th className="p-3 text-right">Ações</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/60">
+                  {movimentacoesFiltradas.length === 0 ? (
+                    <tr>
+                      <td colSpan="6" className="p-8 text-center text-slate-500">
+                        Nenhum registro encontrado para este filtro de datas ou produtos.
+                      </td>
+                    </tr>
+                  ) : (
+                    movimentacoesFiltradas.map((m) => (
+                      <tr key={m.id} className="hover:bg-slate-800/30 transition">
+                        <td className="p-3 text-slate-400">
+                          {new Date(m.created_at).toLocaleString('pt-BR')}
+                        </td>
+                        <td className="p-3 font-semibold text-white">{m.produtos?.nome || 'Produto Removido'}</td>
+                        <td className="p-3 text-slate-400">{m.produtos?.tipo || '-'}</td>
+                        <td className="p-3 font-bold text-slate-200">{m.quantidade} und</td>
+                        <td className="p-3 text-slate-400">{m.observacao || '-'}</td>
+                        <td className="p-3 text-right">
+                          <button
+                            onClick={() => handleExcluirMovimentacao(m)}
+                            className="bg-rose-950/60 hover:bg-rose-900/80 text-rose-300 border border-rose-800/50 px-2.5 py-1 rounded-md text-[11px] font-medium transition"
+                            title="Cancelar / Excluir movimentação e reverter estoque"
+                          >
+                            🗑 Cancelar
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
       )}
 
       {/* MODAL FILTROS (DIÁRIO / PERÍODO) */}
